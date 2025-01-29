@@ -1,0 +1,22 @@
+[project]
+name = "p-class-task-scan"
+version = "0.1.0"
+description = "A tool for scanning and processing student assignments"
+readme = "README.md"
+requires-python = ">=3.8"
+dependencies = [
+    "PyPDF2>=3.0.0",
+    "pytesseract>=0.3.10",
+    "Pillow>=10.0.0",
+    "pandas>=2.0.0",
+    "numpy>=1.24.0"
+]
+
+[dependency-groups]
+dev = [
+    "ipykernel>=6.29.5",
+    "uv>=0.5.25",
+    "pytest>=7.0.0",
+    "black>=23.0.0",
+    "isort>=5.0.0"
+]
