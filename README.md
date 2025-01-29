@@ -26,21 +26,45 @@ The tool can be used from the command line:
 python -m assignment_scanner.cli path/to/your/assignments.pdf --output results.csv
 ```
 
-Optional arguments:
+### Basic Arguments
 - `--output` or `-o`: Specify the output CSV file (default: results.csv)
 - `--region` or `-r`: Specify the region to look for names in format "x1,y1,x2,y2" (optional)
 
-Example with region:
+### Roster Matching
+You can provide a class roster CSV file to match extracted names against known student names:
+
 ```bash
-python -m assignment_scanner.cli assignments.pdf -o results.csv -r "100,200,500,300"
+python -m assignment_scanner.cli assignments.pdf -o results.csv --roster class_roster.csv
 ```
+
+Roster-related arguments:
+- `--roster` or `-R`: Path to CSV file containing class roster
+- `--name-column` or `-n`: Name of the column in roster CSV containing student names (default: "name")
+- `--threshold` or `-t`: Minimum similarity score (0-100) for fuzzy name matching (default: 80)
+
+### Example Roster CSV Format
+```csv
+name,student_id,email
+John Smith,12345,john@example.com
+Jane Doe,67890,jane@example.com
+```
+
+The tool will use fuzzy string matching to match extracted names with the roster, accounting for OCR errors or slight variations in name format. The output CSV will include:
+- Matched student name
+- Raw OCR text
+- Confidence score for the match
+- Whether the name was successfully matched to the roster
+- Additional columns from the roster (if matched)
 
 ## Features
 
 Current:
 - Extract student names from scanned assignments
+- Fuzzy name matching against class roster
+- Configurable matching threshold
 - Save results to CSV file
 - Configurable region for name detection
+- Detailed match confidence scores
 
 Planned:
 - Response analysis
