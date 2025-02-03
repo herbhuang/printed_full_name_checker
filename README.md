@@ -39,28 +39,59 @@ python -m assignment_scanner.cli assignments.pdf -o results.csv --roster class_r
 
 Roster-related arguments:
 - `--roster` or `-R`: Path to CSV file containing class roster
-- `--name-column` or `-n`: Name of the column in roster CSV containing student names (default: "name")
 - `--threshold` or `-t`: Minimum similarity score (0-100) for fuzzy name matching (default: 80)
 
-### Example Roster CSV Format
+#### Single-Column Name Format
+For rosters with a single column containing full names:
+- `--name-column` or `-n`: Name of the column containing full names (default: "name")
+
+Example roster format:
 ```csv
 name,student_id,email
 John Smith,12345,john@example.com
 Jane Doe,67890,jane@example.com
 ```
 
+Example command:
+```bash
+python -m assignment_scanner.cli assignments.pdf --roster roster.csv --name-column "full_name"
+```
+
+#### Split-Name Format
+For rosters with separate columns for first and last names:
+- `--first-name-column` or `-f`: Name of the column containing first names
+- `--last-name-column` or `-l`: Name of the column containing last names
+
+Example roster format:
+```csv
+first_name,last_name,student_id,email
+John,Smith,12345,john@example.com
+Jane,Doe,67890,jane@example.com
+```
+
+Example command:
+```bash
+python -m assignment_scanner.cli assignments.pdf --roster roster.csv --first-name-column "first_name" --last-name-column "last_name"
+```
+
+Note: You must provide both first and last name columns when using split names. You cannot mix single-column and split-name formats.
+
+### Output Format
 The tool will use fuzzy string matching to match extracted names with the roster, accounting for OCR errors or slight variations in name format. The output CSV will include:
 - Matched student name
 - Raw OCR text
 - Confidence score for the match
 - Whether the name was successfully matched to the roster
+- First and last names (if using split-name format)
 - Additional columns from the roster (if matched)
 
 ## Features
 
 Current:
 - Extract student names from scanned assignments
+- Support for both single-column and split-name formats in roster
 - Fuzzy name matching against class roster
+- Separate matching for first/last names when using split format
 - Configurable matching threshold
 - Save results to CSV file
 - Configurable region for name detection

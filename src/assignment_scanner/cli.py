@@ -22,6 +22,17 @@ def parse_region(region_str: Optional[str]) -> Optional[Tuple[int, int, int, int
         sys.exit(1)
 
 
+def validate_name_columns(args):
+    """Validate name column arguments."""
+    if args.first_name_column or args.last_name_column:
+        if not (args.first_name_column and args.last_name_column):
+            print("Error: Both --first-name-column and --last-name-column must be provided together")
+            sys.exit(1)
+        if args.name_column:
+            print("Error: Cannot specify both --name-column and first/last name columns")
+            sys.exit(1)
+
+
 def main():
     parser = argparse.ArgumentParser(description='Process scanned assignments to extract student information.')
     parser.add_argument('pdf_path', help='Path to the PDF file containing scanned assignments')
@@ -31,8 +42,16 @@ def main():
                       help='Region to look for names in format "x1,y1,x2,y2" (optional)')
     parser.add_argument('--roster', '-R',
                       help='Path to CSV file containing class roster')
-    parser.add_argument('--name-column', '-n', default='name',
-                      help='Name of the column in roster CSV containing student names (default: name)')
+    
+    # Name column arguments group
+    name_group = parser.add_mutually_exclusive_group()
+    name_group.add_argument('--name-column', '-n',
+                         help='Name of the column containing full names (for single-column format)')
+    name_group.add_argument('--first-name-column', '-f',
+                         help='Name of the column containing first names (requires --last-name-column)')
+    parser.add_argument('--last-name-column', '-l',
+                      help='Name of the column containing last names (requires --first-name-column)')
+    
     parser.add_argument('--threshold', '-t', type=int, default=80,
                       help='Minimum similarity score (0-100) for fuzzy name matching (default: 80)')
     
@@ -43,12 +62,17 @@ def main():
         print(f"Error: PDF file not found: {args.pdf_path}")
         sys.exit(1)
     
+    # Validate name column arguments
+    validate_name_columns(args)
+    
     # Create scanner with optional region and roster
     region = parse_region(args.region)
     scanner = AssignmentScanner(
         name_region=region,
         roster_path=args.roster,
         name_column=args.name_column,
+        first_name_column=args.first_name_column,
+        last_name_column=args.last_name_column,
         match_threshold=args.threshold
     )
     
@@ -57,6 +81,11 @@ def main():
         print(f"Processing {args.pdf_path}...")
         if args.roster:
             print(f"Using roster from {args.roster}")
+            if args.first_name_column:
+                print(f"Using split name columns: {args.first_name_column}, {args.last_name_column}")
+            else:
+                name_col = args.name_column or 'name'
+                print(f"Using single name column: {name_col}")
             print(f"Matching names with minimum similarity score of {args.threshold}%")
             
         results = scanner.process_pdf(args.pdf_path)
