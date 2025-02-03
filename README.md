@@ -9,21 +9,45 @@ A Python tool for automating the process of scanning and processing student assi
   - On Ubuntu/Debian: `sudo apt-get install tesseract-ocr`
   - On macOS: `brew install tesseract`
   - On Windows: Download and install from [GitHub Tesseract releases](https://github.com/UB-Mannheim/tesseract/wiki)
+- `uv` package manager installed (`pip install uv`)
 
 ## Installation
 
+There are two ways to install and run this tool:
+
+### Method 1: Development Installation
 1. Clone this repository
 2. Install dependencies using `uv`:
    ```bash
    uv pip install -e .
    ```
+3. Run using the module:
+   ```bash
+   python -m assignment_scanner.cli [arguments]
+   ```
+
+### Method 2: Direct Script Execution
+You can run the script directly using `uv run` without installing:
+1. Clone this repository
+2. Run using `uv`:
+   ```bash
+   uv run scan_assignments.py [arguments]
+   ```
+
+This method automatically handles dependencies and virtual environment creation.
 
 ## Usage
 
-The tool can be used from the command line:
+The tool can be used in two ways:
 
+### Using installed package:
 ```bash
 python -m assignment_scanner.cli path/to/your/assignments.pdf --output results.csv
+```
+
+### Using uv run (recommended):
+```bash
+uv run scan_assignments.py path/to/your/assignments.pdf --output results.csv
 ```
 
 ### Basic Arguments
