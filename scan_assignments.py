@@ -1,13 +1,15 @@
 # /// script
-# requires-python = ">=3.8"
+# requires-python = ">=3.11,<3.12"
 # dependencies = [
-#     "PyPDF2>=3.0.0",
-#     "pytesseract>=0.3.10",
-#     "Pillow>=10.0.0",
-#     "pandas>=2.0.0",
-#     "numpy>=1.24.0",
-#     "thefuzz>=0.19.0",
-#     "python-Levenshtein>=0.21.0"
+#     "PyPDF2==3.0.1",
+#     "pytesseract==0.3.10",
+#     "Pillow==9.5.0",
+#     "numpy==1.24.3",
+#     "pandas==2.0.3",
+#     "thefuzz[speedup]==0.19.0",
+#     "pdf2image==1.16.3",
+#     "opencv-python-headless==4.8.1.78",
+#     "scikit-image==0.21.0"
 # ]
 # ///
 

@@ -1,0 +1,13 @@
+{
+  "regions": [
+    {
+      "name": "region_1",
+      "coordinates": [
+        49,
+        311,
+        291,
+        367
+      ]
+    }
+  ]
+}

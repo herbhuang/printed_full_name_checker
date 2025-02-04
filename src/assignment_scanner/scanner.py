@@ -1,236 +1,215 @@
 """
 Assignment Scanner - Main module for processing scanned assignments.
-This module handles PDF processing and OCR for student assignments.
+This module handles PDF processing and region extraction for handwritten text recognition preprocessing.
 """
 
 import os
 from typing import Dict, List, Optional, Tuple, Union
+import io
 
+import cv2
 import numpy as np
-import pandas as pd
 from PIL import Image
 from PyPDF2 import PdfReader
-import pytesseract
-from thefuzz import process
+from pdf2image import convert_from_path
+from pdf2image.exceptions import PDFPageCountError
 
 
 class AssignmentScanner:
     def __init__(
         self,
-        name_region: Optional[Tuple[int, int, int, int]] = None,
-        roster_path: Optional[str] = None,
-        name_column: Optional[str] = None,
-        first_name_column: Optional[str] = None,
-        last_name_column: Optional[str] = None,
-        match_threshold: int = 80
+        dpi: int = 300,
+        padding: int = 10
     ):
         """
         Initialize the AssignmentScanner.
         
         Args:
-            name_region: Optional tuple of (x1, y1, x2, y2) coordinates where names are expected
-                        If None, will try to detect names in the entire page
-            roster_path: Optional path to a CSV file containing the class roster
-            name_column: Name of the column in roster CSV that contains full names (for single-column format)
-            first_name_column: Name of the column containing first names (for two-column format)
-            last_name_column: Name of the column containing last names (for two-column format)
-            match_threshold: Minimum similarity score (0-100) for fuzzy name matching
+            dpi: DPI for PDF to image conversion
+            padding: Padding between regions when stitching
         """
-        self.name_region = name_region
-        self.match_threshold = match_threshold
-        self.roster = None
-        self.name_column = name_column
-        self.first_name_column = first_name_column
-        self.last_name_column = last_name_column
-        self.using_split_names = False
-        
-        if roster_path:
-            self.load_roster(roster_path)
-        
-    def load_roster(self, roster_path: str):
+        self.dpi = dpi
+        self.padding = padding
+        self.current_pdf_path = None
+
+    def _convert_page_to_image(self, page_number: int) -> Image.Image:
         """
-        Load a class roster from a CSV file.
+        Convert a PDF page to a PIL Image.
         
         Args:
-            roster_path: Path to the CSV file containing the roster
-        """
-        if not os.path.exists(roster_path):
-            raise FileNotFoundError(f"Roster file not found: {roster_path}")
-            
-        self.roster = pd.read_csv(roster_path)
-        
-        # Determine if we're using split names or single column
-        if self.first_name_column and self.last_name_column:
-            if not all(col in self.roster.columns for col in [self.first_name_column, self.last_name_column]):
-                raise ValueError(f"First name column '{self.first_name_column}' or last name column '{self.last_name_column}' not found in roster")
-            self.using_split_names = True
-            
-            # Clean the names
-            self.roster[self.first_name_column] = self.roster[self.first_name_column].str.strip()
-            self.roster[self.last_name_column] = self.roster[self.last_name_column].str.strip()
-            
-            # Create a full name column for matching
-            self.roster['full_name'] = (self.roster[self.first_name_column] + ' ' + 
-                                      self.roster[self.last_name_column])
-            self.name_column = 'full_name'
-            
-        else:
-            # Single column format
-            self.name_column = self.name_column or 'name'
-            if self.name_column not in self.roster.columns:
-                raise ValueError(f"Name column '{self.name_column}' not found in roster")
-            self.using_split_names = False
-            
-            # Clean the names
-            self.roster[self.name_column] = self.roster[self.name_column].str.strip()
-        
-    def find_best_name_match(self, extracted_text: str) -> Tuple[Optional[str], Optional[float]]:
-        """
-        Find the best matching name from the roster using fuzzy string matching.
-        
-        Args:
-            extracted_text: Text extracted from the assignment
+            page_number: The page number to convert (1-based)
             
         Returns:
-            Tuple of (best_match, score). If no roster is loaded or no good match found,
-            returns (None, None)
+            PIL Image of the page
         """
-        if self.roster is None:
-            return None, None
+        try:
+            images = convert_from_path(
+                self.current_pdf_path,
+                dpi=self.dpi,
+                first_page=page_number,
+                last_page=page_number
+            )
             
-        # Get list of names from roster
-        roster_names = self.roster[self.name_column].tolist()
-        
-        # Try matching full name first
-        best_match, score = process.extractOne(extracted_text, roster_names)
-        
-        if score >= self.match_threshold:
-            return best_match, score
+            if not images:
+                raise ValueError(f"Failed to convert page {page_number} to image")
             
-        # If using split names and full name match failed, try matching parts
-        if self.using_split_names and score < self.match_threshold:
-            # Try matching first name + last name separately
-            words = extracted_text.split()
-            if len(words) >= 2:
-                # Try matching first word against first names
-                first_names = self.roster[self.first_name_column].tolist()
-                first_match, first_score = process.extractOne(words[0], first_names)
-                
-                # Try matching last word against last names
-                last_names = self.roster[self.last_name_column].tolist()
-                last_match, last_score = process.extractOne(words[-1], last_names)
-                
-                # If both parts match well enough
-                if first_score >= self.match_threshold and last_score >= self.match_threshold:
-                    # Find the corresponding full name
-                    mask = ((self.roster[self.first_name_column] == first_match) & 
-                           (self.roster[self.last_name_column] == last_match))
-                    if mask.any():
-                        matched_full_name = self.roster.loc[mask, self.name_column].iloc[0]
-                        return matched_full_name, min(first_score, last_score)
-        
-        return None, None
-        
-    def process_pdf(self, pdf_path: str) -> List[Dict[str, Union[str, float, int]]]:
+            return images[0]
+            
+        except PDFPageCountError as e:
+            raise ValueError(f"Error converting PDF page to image: {str(e)}")
+        except Exception as e:
+            raise ValueError(f"Unexpected error converting PDF page to image: {str(e)}")
+
+    def preprocess_image_region(self, image: Image.Image, region: Tuple[int, int, int, int]) -> Image.Image:
         """
-        Process a PDF file containing scanned assignments.
+        Preprocess a region of an image.
+        
+        Args:
+            image: PIL Image to process
+            region: Tuple of (x1, y1, x2, y2) coordinates
+            
+        Returns:
+            Processed PIL Image
+        """
+        # Just crop the region and return it as is
+        region_image = image.crop(region)
+        return region_image
+
+    def stitch_regions_vertically(self, image: Image.Image) -> Image.Image:
+        """
+        Extract and stitch regions vertically from an image.
+        
+        Args:
+            image: Source image
+            
+        Returns:
+            Combined image with all regions stacked vertically
+        """
+        if not self.regions:
+            return None
+            
+        # Crop regions without preprocessing
+        cropped_regions = [self.preprocess_image_region(image, region) for region in self.regions]
+        
+        # Calculate dimensions for the combined image
+        total_height = sum(img.height for img in cropped_regions) + self.padding * (len(cropped_regions) - 1)
+        max_width = max(img.width for img in cropped_regions)
+        
+        # Create new image with white background
+        combined_image = Image.new('RGB', (max_width, total_height), 'white')
+        
+        # Paste all regions vertically
+        current_y = 0
+        for img in cropped_regions:
+            # Center the image horizontally if it's narrower than the widest one
+            x_offset = (max_width - img.width) // 2
+            combined_image.paste(img, (x_offset, current_y))
+            current_y += img.height + self.padding
+            
+        return combined_image
+
+    def process_pdf(self, pdf_path: str, regions: List[Tuple[int, int, int, int]]) -> Tuple[Image.Image, str]:
+        """
+        Process a PDF file and extract regions from all pages, combining them vertically.
         
         Args:
             pdf_path: Path to the PDF file
+            regions: List of tuples (x1, y1, x2, y2) specifying regions to extract
             
         Returns:
-            List of dictionaries containing extracted information for each page
+            Tuple of (combined image, suggested output filename)
         """
         if not os.path.exists(pdf_path):
             raise FileNotFoundError(f"PDF file not found: {pdf_path}")
-            
-        results = []
-        pdf_reader = PdfReader(pdf_path)
         
-        for page_num in range(len(pdf_reader.pages)):
-            page = pdf_reader.pages[page_num]
-            # Convert PDF page to image (implementation needed)
-            # This is a placeholder for the actual conversion
-            image = self._convert_page_to_image(page)
+        if not regions:
+            raise ValueError("No regions specified for processing")
+        
+        # Generate output filename based on input filename
+        base_name = os.path.splitext(os.path.basename(pdf_path))[0]
+        output_filename = f"{base_name}_processed.jpg"
+        
+        self.current_pdf_path = pdf_path
+        all_processed_regions = []
+        
+        # Convert PDF pages to images
+        images = convert_from_path(pdf_path, dpi=self.dpi)
+        
+        # Process each page and collect all regions
+        for page_num, image in enumerate(images, 1):
+            try:
+                # Process and get regions from this page
+                processed_regions = [self.preprocess_image_region(image, region) for region in regions]
+                all_processed_regions.extend(processed_regions)
+                
+            except Exception as e:
+                print(f"Warning: Error processing page {page_num}: {str(e)}")
+        
+        if not all_processed_regions:
+            return None, output_filename
             
-            # Extract student name from the specified region
-            student_info = self._extract_student_info(image)
-            student_info['page_number'] = page_num + 1
-            results.append(student_info)
+        # Calculate dimensions for the final combined image
+        total_height = sum(img.height for img in all_processed_regions) + self.padding * (len(all_processed_regions) - 1)
+        max_width = max(img.width for img in all_processed_regions)
+        
+        # Create new image with white background
+        combined_image = Image.new('RGB', (max_width, total_height), 'white')
+        
+        # Paste all regions vertically
+        current_y = 0
+        for img in all_processed_regions:
+            # Center the image horizontally if it's narrower than the widest one
+            x_offset = (max_width - img.width) // 2
+            combined_image.paste(img, (x_offset, current_y))
+            current_y += img.height + self.padding
             
-        return results
-    
-    def _convert_page_to_image(self, page) -> Image.Image:
+        return combined_image, output_filename
+
+    def process_multiple_pdfs(self, pdf_paths: List[str], regions_map: Dict[str, List[Tuple[int, int, int, int]]]) -> List[Tuple[Image.Image, str]]:
         """
-        Convert a PDF page to a PIL Image.
-        This is a placeholder - actual implementation needed.
-        """
-        # TODO: Implement PDF page to image conversion
-        raise NotImplementedError("PDF to image conversion not yet implemented")
-    
-    def _extract_student_info(self, image: Image.Image) -> Dict[str, Union[str, float, int]]:
-        """
-        Extract student information from the image.
+        Process multiple PDF files in sequence, each with its own regions.
         
         Args:
-            image: PIL Image of the assignment page
+            pdf_paths: List of paths to PDF files
+            regions_map: Dictionary mapping file paths to their regions
             
         Returns:
-            Dictionary containing extracted student information
+            List of tuples (processed image, output filename)
         """
-        if self.name_region:
-            # Crop image to name region if specified
-            name_image = image.crop(self.name_region)
-        else:
-            name_image = image
-            
-        # Perform OCR on the image
-        extracted_text = pytesseract.image_to_string(name_image)
-        extracted_text = extracted_text.strip()
-        
-        # Try to match with roster if available
-        matched_name, confidence = self.find_best_name_match(extracted_text)
-        
-        result = {
-            'student_name': matched_name if matched_name else extracted_text,
-            'raw_text': extracted_text,
-            'confidence_score': confidence if confidence else None,
-            'matched_to_roster': matched_name is not None,
-            'timestamp': pd.Timestamp.now()
-        }
-        
-        # Add split name information if available
-        if matched_name and self.using_split_names:
-            mask = self.roster[self.name_column] == matched_name
-            if mask.any():
-                result['first_name'] = self.roster.loc[mask, self.first_name_column].iloc[0]
-                result['last_name'] = self.roster.loc[mask, self.last_name_column].iloc[0]
-        
-        return result
-    
-    def save_results(self, results: List[Dict[str, Union[str, float, int]]], output_path: str):
+        results = []
+        for pdf_path in pdf_paths:
+            try:
+                regions = regions_map.get(pdf_path, [])
+                if regions:
+                    result = self.process_pdf(pdf_path, regions)
+                    if result[0] is not None:  # Only add if processing was successful
+                        results.append(result)
+                else:
+                    print(f"Warning: No regions defined for {pdf_path}")
+            except Exception as e:
+                print(f"Error processing {pdf_path}: {str(e)}")
+        return results
+
+    def save_image(self, image: Image.Image, output_path: str):
         """
-        Save the extracted results to a CSV file.
+        Save the processed image to a file with maximum quality.
         
         Args:
-            results: List of dictionaries containing extracted information
-            output_path: Path where to save the CSV file
+            image: PIL Image to save
+            output_path: Path where to save the image
         """
-        df = pd.DataFrame(results)
+        image.save(output_path, format='JPEG', quality=100, subsampling=0)
+
+    def get_image_bytes(self, image: Image.Image) -> bytes:
+        """
+        Convert PIL Image to bytes with maximum quality.
         
-        # If we have a roster, merge additional student information
-        if self.roster is not None and not df.empty:
-            # Remove the generated full_name column before merging if using split names
-            if self.using_split_names:
-                roster_for_merge = self.roster.drop(columns=['full_name'])
-            else:
-                roster_for_merge = self.roster
-                
-            df = df.merge(
-                roster_for_merge,
-                left_on='student_name',
-                right_on=self.name_column if not self.using_split_names else 'full_name',
-                how='left'
-            )
-        
-        df.to_csv(output_path, index=False) 
+        Args:
+            image: PIL Image to convert
+            
+        Returns:
+            Image bytes in highest quality JPEG format
+        """
+        img_byte_arr = io.BytesIO()
+        image.save(img_byte_arr, format='JPEG', quality=100, subsampling=0)
+        return img_byte_arr.getvalue() 
