@@ -177,6 +177,79 @@ def stitch_regions_vertically(image: Image.Image, regions: List[Tuple[int, int, 
     return combined_image
 
 
+def stitch_regions_horizontally(image: Image.Image, regions: List[Tuple[int, int, int, int]], padding: int = 10) -> Image.Image:
+    """
+    Crop regions from the image and stitch them horizontally into a single image.
+    """
+    if not regions:
+        return None
+        
+    # Crop all regions
+    cropped_regions = [image.crop(region) for region in regions]
+    
+    # Calculate dimensions for the combined image
+    total_width = sum(img.width for img in cropped_regions) + padding * (len(regions) - 1)
+    max_height = max(img.height for img in cropped_regions)
+    
+    # Create new image with white background
+    combined_image = Image.new('RGB', (total_width, max_height), 'white')
+    
+    # Paste all regions horizontally
+    current_x = 0
+    for img in cropped_regions:
+        # Center the image vertically if it's shorter than the tallest one
+        y_offset = (max_height - img.height) // 2
+        combined_image.paste(img, (current_x, y_offset))
+        current_x += img.width + padding
+        
+    return combined_image
+
+
+def stitch_regions_grid(image: Image.Image, regions: List[Tuple[int, int, int, int]], 
+                       max_cols: int = 2, padding: int = 10) -> Image.Image:
+    """
+    Crop regions from the image and arrange them in a grid.
+    """
+    if not regions:
+        return None
+        
+    # Crop all regions
+    cropped_regions = [image.crop(region) for region in regions]
+    
+    # Calculate number of rows and columns
+    n_regions = len(cropped_regions)
+    n_cols = min(max_cols, n_regions)
+    n_rows = (n_regions + n_cols - 1) // n_cols
+    
+    # Calculate maximum dimensions for each cell
+    max_cell_width = max(img.width for img in cropped_regions)
+    max_cell_height = max(img.height for img in cropped_regions)
+    
+    # Calculate total dimensions
+    total_width = n_cols * max_cell_width + (n_cols - 1) * padding
+    total_height = n_rows * max_cell_height + (n_rows - 1) * padding
+    
+    # Create new image with white background
+    combined_image = Image.new('RGB', (total_width, total_height), 'white')
+    
+    # Paste all regions in grid
+    for idx, img in enumerate(cropped_regions):
+        row = idx // n_cols
+        col = idx % n_cols
+        
+        # Calculate position
+        x = col * (max_cell_width + padding)
+        y = row * (max_cell_height + padding)
+        
+        # Center the image in its cell
+        x_offset = (max_cell_width - img.width) // 2
+        y_offset = (max_cell_height - img.height) // 2
+        
+        combined_image.paste(img, (x + x_offset, y + y_offset))
+    
+    return combined_image
+
+
 def save_image_to_jpg(image: Image.Image, quality: int = 95) -> bytes:
     """Convert PIL Image to JPG bytes."""
     img_byte_arr = io.BytesIO()
@@ -214,6 +287,8 @@ def main():
         st.session_state.preview_file_index = 0
     if 'first_page_previews' not in st.session_state:
         st.session_state.first_page_previews = {}
+    if 'view_mode' not in st.session_state:
+        st.session_state.view_mode = "Separate"
     
     # Create three main columns for consistent layout
     step_col, control_col, preview_col = st.columns([0.2, 0.3, 0.5])
@@ -339,7 +414,7 @@ def main():
                 display_width = int(current_preview.width * scale_factor)
                 
                 # Canvas controls
-                col1, col2 = st.columns(2)
+                col1, col2, col3 = st.columns(3)
                 with col1:
                     if st.button("Clear Regions"):
                         if st.session_state.current_file in st.session_state.regions_map:
@@ -348,6 +423,13 @@ def main():
                         st.rerun()
                 
                 with col2:
+                    view_mode = st.selectbox(
+                        "View Mode",
+                        ["Separate", "Vertical Stack", "Horizontal Stack", "Grid"],
+                        key="view_mode"
+                    )
+                
+                with col3:
                     if st.button("Process Current", type="primary"):
                         if st.session_state.current_file in st.session_state.regions_map:
                             scanner = AssignmentScanner()
@@ -519,11 +601,38 @@ def main():
                 current_regions = st.session_state.regions_map[st.session_state.current_file]
                 st.write(f"Regions: {len(current_regions)}")
                 
+                # Show regions based on view mode
+                if current_regions:
+                    if st.session_state.view_mode == "Separate":
+                        # Show each region separately
+                        for i, region in enumerate(current_regions):
+                            region_img = current_preview.crop(region)
+                            st.image(region_img, caption=f"Region {i+1}", use_column_width=True)
+                    
+                    elif st.session_state.view_mode == "Vertical Stack":
+                        # Show vertically stacked regions
+                        stacked_img = stitch_regions_vertically(current_preview, current_regions)
+                        if stacked_img:
+                            st.image(stacked_img, caption="Vertically Stacked Regions", use_column_width=True)
+                    
+                    elif st.session_state.view_mode == "Horizontal Stack":
+                        # Show horizontally stacked regions
+                        stacked_img = stitch_regions_horizontally(current_preview, current_regions)
+                        if stacked_img:
+                            st.image(stacked_img, caption="Horizontally Stacked Regions", use_column_width=True)
+                    
+                    else:  # Grid
+                        # Show regions in a grid
+                        grid_img = stitch_regions_grid(current_preview, current_regions)
+                        if grid_img:
+                            st.image(grid_img, caption="Regions Grid", use_column_width=True)
+                
                 # Show processed result if available
                 if st.session_state.current_result is not None:
                     try:
                         img, filename = st.session_state.current_result
                         if img is not None and filename is not None:
+                            st.write("### Processed Result")
                             preview_height = 400
                             preview_scale = preview_height / img.height
                             preview_width = int(img.width * preview_scale)
