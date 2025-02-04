@@ -16,6 +16,8 @@ from PIL import Image, ImageDraw, ImageFont
 from streamlit_drawable_canvas import st_canvas
 import pytesseract
 import io
+import zipfile
+from io import BytesIO
 
 from .scanner import AssignmentScanner
 
@@ -184,13 +186,12 @@ def save_image_to_jpg(image: Image.Image, quality: int = 95) -> bytes:
 
 def main():
     st.set_page_config(layout="wide")
-    st.title("Assignment Scanner Configuration")
     
-    # Initialize session state
+    # Initialize session state variables
     if 'step' not in st.session_state:
         st.session_state.step = 1
     if 'regions_map' not in st.session_state:
-        st.session_state.regions_map = {}  # Maps file paths to their regions
+        st.session_state.regions_map = {}
     if 'current_image' not in st.session_state:
         st.session_state.current_image = None
     if 'current_file' not in st.session_state:
@@ -200,250 +201,376 @@ def main():
     if 'uploaded_files' not in st.session_state:
         st.session_state.uploaded_files = []
     if 'processed_files' not in st.session_state:
-        st.session_state.processed_files = set()  # Track which files have been processed
+        st.session_state.processed_files = set()
     if 'processing_complete' not in st.session_state:
         st.session_state.processing_complete = False
-
-    # Sidebar for navigation and controls
-    st.sidebar.title("Steps")
-    step_names = {
-        1: "Upload Files",
-        2: "Draw Regions",
-        3: "Process Files"
-    }
+    if 'stacked_previews' not in st.session_state:
+        st.session_state.stacked_previews = {}
+    if 'preview_generated' not in st.session_state:
+        st.session_state.preview_generated = False
+    if 'current_result' not in st.session_state:
+        st.session_state.current_result = None
+    if 'preview_file_index' not in st.session_state:
+        st.session_state.preview_file_index = 0
+    if 'first_page_previews' not in st.session_state:
+        st.session_state.first_page_previews = {}
     
-    for step_num, step_name in step_names.items():
-        if st.sidebar.button(
-            f"{step_name} {'✓' if st.session_state.step > step_num else ''}",
-            disabled=st.session_state.step < step_num
-        ):
-            st.session_state.step = step_num
-            if step_num == 2:  # Reset canvas when returning to drawing step
-                st.session_state.canvas_key += 1
+    # Create three main columns for consistent layout
+    step_col, control_col, preview_col = st.columns([0.2, 0.3, 0.5])
     
-    # Step 1: File Upload
-    if st.session_state.step == 1:
-        st.header("Step 1: Upload PDF Files")
+    # Left Column: Steps and Navigation
+    with step_col:
+        st.title("Steps")
+        step_names = {
+            1: "Upload Files",
+            2: "Draw Regions",
+            3: "Process Files"
+        }
         
-        # Add transparency control
-        alpha = st.slider("Page Transparency", 0.0, 1.0, 0.3, 0.1,
-                         help="Adjust transparency level for stacked page preview")
-        
-        uploaded_files = st.file_uploader("Upload PDF files", type=['pdf'], accept_multiple_files=True)
-            
-        if uploaded_files:
-            st.session_state.uploaded_files = []
-            st.session_state.regions_map = {}
-            st.session_state.processed_files = set()
-            st.session_state.processing_complete = False
-            
-            # Save all uploaded files temporarily with their original names
-            os.makedirs("temp_uploads", exist_ok=True)
-            for uploaded_file in uploaded_files:
-                file_path = os.path.join("temp_uploads", uploaded_file.name)
-                with open(file_path, "wb") as f:
-                    f.write(uploaded_file.getvalue())
-                st.session_state.uploaded_files.append(file_path)
-            
-            st.write(f"Total files uploaded: {len(st.session_state.uploaded_files)}")
-            for file_path in st.session_state.uploaded_files:
-                st.write(f"- {os.path.basename(file_path)}")
-                # Show stacked preview for each file
-                try:
-                    preview = load_first_page(file_path, stack_preview=True, alpha=alpha)
-                    st.image(preview, caption=f"Stacked preview: {os.path.basename(file_path)}", use_column_width=True)
-                except Exception as e:
-                    st.error(f"Error creating preview for {os.path.basename(file_path)}: {str(e)}")
-            
-            if st.button("Start Processing Files"):
-                st.session_state.step = 2
-                st.session_state.current_file = st.session_state.uploaded_files[0]
-                st.session_state.current_image = load_first_page(st.session_state.current_file, stack_preview=True, alpha=alpha)
-                st.session_state.canvas_key += 1
-                st.experimental_rerun()
-
-    # Step 2: Region Selection and Processing
-    elif st.session_state.step == 2:
-        if not st.session_state.current_file:
-            st.error("No file selected for processing")
-            return
-
-        current_filename = os.path.basename(st.session_state.current_file)
-        st.header(f"Processing: {current_filename}")
-        
-        # Add transparency control
-        alpha = st.slider("Page Transparency", 0.0, 1.0, 0.3, 0.1,
-                         help="Adjust transparency level for stacked page preview")
-        
-        # Show file progress
-        total_files = len(st.session_state.uploaded_files)
-        processed_files = len(st.session_state.processed_files)
-        st.write(f"Processing file {processed_files + 1} of {total_files}")
-        
-        # Update current image with new alpha value
-        st.session_state.current_image = load_first_page(
-            st.session_state.current_file,
-            stack_preview=True,
-            alpha=alpha
-        )
-        
-        # Region drawing interface
-        st.write("Draw rectangles around the regions to extract.")
-        
-        # Calculate scaling factor
-        DISPLAY_HEIGHT = 800
-        scale_factor = DISPLAY_HEIGHT / st.session_state.current_image.height
-        display_width = int(st.session_state.current_image.width * scale_factor)
-        
-        # Resize image for display
-        display_image = st.session_state.current_image.resize(
-            (display_width, DISPLAY_HEIGHT), 
-            Image.Resampling.LANCZOS
-        )
-
-        # Clear regions button for current file
-        if st.button("Clear Regions"):
-            if st.session_state.current_file in st.session_state.regions_map:
-                del st.session_state.regions_map[st.session_state.current_file]
-            st.session_state.canvas_key += 1
-            st.experimental_rerun()
-        
-        # Canvas for drawing regions
-        canvas_result = st_canvas(
-            fill_color="rgba(255, 165, 0, 0.3)",
-            stroke_width=2,
-            stroke_color="#e00",
-            background_image=display_image,
-            drawing_mode="rect",
-            key=f"canvas_{st.session_state.canvas_key}",
-            height=DISPLAY_HEIGHT,
-            width=display_width,
-            update_streamlit=True
-        )
-        
-        # Process drawn regions
-        if canvas_result.json_data is not None and canvas_result.json_data.get("objects"):
-            regions = canvas_result.json_data["objects"]
-            # Update regions with proper scaling
-            current_regions = [
-                (
-                    max(0, int(r['left'] / scale_factor)),
-                    max(0, int(r['top'] / scale_factor)),
-                    min(st.session_state.current_image.width, int((r['left'] + r['width']) / scale_factor)),
-                    min(st.session_state.current_image.height, int((r['top'] + r['height']) / scale_factor))
-                )
-                for r in regions
-            ]
-            st.session_state.regions_map[st.session_state.current_file] = current_regions
-            
-            # Show current regions
-            st.write("### Current Regions:")
-            for i, region in enumerate(current_regions, 1):
-                st.write(f"Region {i}: (x1={region[0]}, y1={region[1]}, x2={region[2]}, y2={region[3]})")
-        
-        col1, col2 = st.columns(2)
-        with col1:
-            if st.button("Process Current File"):
-                # Process current file
-                scanner = AssignmentScanner()
-                result = scanner.process_pdf(
-                    st.session_state.current_file,
-                    st.session_state.regions_map.get(st.session_state.current_file, [])
-                )
-                
-                if result[0] is not None:
-                    # Save result
-                    st.session_state.processed_files.add(st.session_state.current_file)
-                    
-                    # Show preview
-                    img, filename = result
-                    st.write(f"### Processed: {filename}")
-                    
-                    # Calculate display size
-                    preview_height = 400
-                    preview_scale = preview_height / img.height
-                    preview_width = int(img.width * preview_scale)
-                    
-                    # Show preview
-                    preview_img = img.resize(
-                        (preview_width, preview_height),
-                        Image.Resampling.LANCZOS
-                    )
-                    st.image(preview_img, caption=filename)
-                    
-                    # Add download button
-                    jpg_bytes = scanner.get_image_bytes(img)
-                    st.download_button(
-                        label=f"Download {filename}",
-                        data=jpg_bytes,
-                        file_name=filename,
-                        mime="image/jpeg"
-                    )
-        
-        with col2:
-            # Move to next file button
-            remaining_files = [f for f in st.session_state.uploaded_files 
-                             if f not in st.session_state.processed_files]
-            
-            if remaining_files:
-                if st.button("Next File"):
-                    next_file = remaining_files[0]
-                    st.session_state.current_file = next_file
-                    st.session_state.current_image = load_first_page(next_file, stack_preview=True, alpha=alpha)
+        for step_num, step_name in step_names.items():
+            if st.button(
+                f"{step_name} {'✓' if st.session_state.step > step_num else ''}",
+                disabled=st.session_state.step < step_num,
+                key=f"step_{step_num}"
+            ):
+                st.session_state.step = step_num
+                if step_num == 2:  # Reset canvas when returning to drawing step
                     st.session_state.canvas_key += 1
-                    st.experimental_rerun()
-            else:
-                st.session_state.processing_complete = True
-                st.success("All files processed!")
-                if st.button("Process More Files"):
-                    # Clean up
-                    for file_path in st.session_state.uploaded_files:
-                        try:
-                            os.remove(file_path)
-                        except:
-                            pass
-                    try:
-                        os.rmdir("temp_uploads")
-                    except:
-                        pass
-                    
-                    # Reset state
-                    st.session_state.step = 1
-                    st.session_state.regions_map = {}
-                    st.session_state.current_image = None
-                    st.session_state.current_file = None
-                    st.session_state.canvas_key = 0
+        
+        # Show progress information
+        if st.session_state.step > 1 and st.session_state.uploaded_files:
+            st.write("### Progress")
+            total_files = len(st.session_state.uploaded_files)
+            processed_files = len(st.session_state.processed_files)
+            st.write(f"Files: {processed_files} / {total_files}")
+            
+            if st.session_state.current_file:
+                st.write("Current file:")
+                st.write(os.path.basename(st.session_state.current_file))
+    
+    # Middle Column: Controls
+    with control_col:
+        if st.session_state.step == 1:
+            st.header("Upload Files")
+            uploaded_files = st.file_uploader("Upload PDF files", type=['pdf'], accept_multiple_files=True)
+            
+            if uploaded_files:
+                # File handling code remains the same...
+                current_filenames = {os.path.basename(f) for f in st.session_state.uploaded_files}
+                new_filenames = {f.name for f in uploaded_files}
+                
+                if current_filenames != new_filenames:
+                    # Reset state code remains the same...
                     st.session_state.uploaded_files = []
+                    st.session_state.regions_map = {}
                     st.session_state.processed_files = set()
                     st.session_state.processing_complete = False
-                    st.experimental_rerun()
+                    st.session_state.stacked_previews = {}
+                    st.session_state.preview_generated = False
+                    st.session_state.first_page_previews = {}
+                    
+                    # Save files code remains the same...
+                    os.makedirs("temp_uploads", exist_ok=True)
+                    for uploaded_file in uploaded_files:
+                        file_path = os.path.join("temp_uploads", uploaded_file.name)
+                        with open(file_path, "wb") as f:
+                            f.write(uploaded_file.getvalue())
+                        st.session_state.uploaded_files.append(file_path)
+                
+                st.write(f"Total files: {len(st.session_state.uploaded_files)}")
+                for file_path in st.session_state.uploaded_files:
+                    st.write(f"- {os.path.basename(file_path)}")
+                
+                st.write("### Preview Settings")
+                alpha = st.slider("Page Transparency", 0.0, 1.0, 0.3, 0.1)
+                
+                st.write("### Actions")
+                col1, col2 = st.columns(2)
+                with col1:
+                    if st.button("Generate Stacked Previews", type="primary"):
+                        with st.spinner("Generating previews..."):
+                            progress = st.progress(0)
+                            for idx, file_path in enumerate(st.session_state.uploaded_files):
+                                stacked = create_stacked_preview(file_path, alpha=alpha)
+                                if stacked is not None:
+                                    if stacked.mode == 'RGBA':
+                                        white_bg = Image.new('RGB', stacked.size, 'white')
+                                        white_bg.paste(stacked, mask=stacked.split()[3])
+                                        stacked = white_bg
+                                    st.session_state.stacked_previews[file_path] = stacked
+                                progress.progress((idx + 1) / len(st.session_state.uploaded_files))
+                            st.session_state.preview_generated = True
+                            st.rerun()
+                
+                with col2:
+                    if st.button("Start Processing", type="primary"):
+                        st.session_state.step = 2
+                        st.session_state.current_file = st.session_state.uploaded_files[0]
+                        # Use first page preview if no stacked preview available
+                        if st.session_state.current_file not in st.session_state.stacked_previews:
+                            if st.session_state.current_file not in st.session_state.first_page_previews:
+                                preview = load_first_page(st.session_state.current_file, stack_preview=False)
+                                st.session_state.first_page_previews[st.session_state.current_file] = preview
+                            st.session_state.current_image = st.session_state.first_page_previews[st.session_state.current_file]
+                        else:
+                            st.session_state.current_image = st.session_state.stacked_previews[st.session_state.current_file]
+                        st.session_state.canvas_key += 1
+                        st.rerun()
 
-        # If processing is complete, show download all button
-        if st.session_state.processing_complete and len(st.session_state.processed_files) > 1:
-            st.write("### Download All Files")
-            # Create ZIP of all processed files
-            scanner = AssignmentScanner()
-            results = scanner.process_multiple_pdfs(
-                list(st.session_state.processed_files),
-                st.session_state.regions_map
-            )
-            
-            if results:
-                import zipfile
-                from io import BytesIO
+        elif st.session_state.step == 2:
+            st.header("Draw Regions")
+            if st.session_state.current_file:
+                # Use appropriate preview based on what's available
+                if st.session_state.current_file in st.session_state.stacked_previews:
+                    current_preview = st.session_state.stacked_previews[st.session_state.current_file]
+                    preview_type = "stacked"
+                else:
+                    if st.session_state.current_file not in st.session_state.first_page_previews:
+                        preview = load_first_page(st.session_state.current_file, stack_preview=False)
+                        st.session_state.first_page_previews[st.session_state.current_file] = preview
+                    current_preview = st.session_state.first_page_previews[st.session_state.current_file]
+                    preview_type = "first page"
                 
-                zip_buffer = BytesIO()
-                with zipfile.ZipFile(zip_buffer, "w") as zip_file:
-                    for img, filename in results:
-                        img_bytes = scanner.get_image_bytes(img)
-                        zip_file.writestr(filename, img_bytes)
+                st.write(f"Drawing on {preview_type} preview")
                 
-                st.download_button(
-                    label="Download All as ZIP",
-                    data=zip_buffer.getvalue(),
-                    file_name="processed_files.zip",
-                    mime="application/zip"
+                # Calculate scaling for canvas
+                DISPLAY_HEIGHT = 600
+                scale_factor = DISPLAY_HEIGHT / current_preview.height
+                display_width = int(current_preview.width * scale_factor)
+                
+                # Canvas controls
+                col1, col2 = st.columns(2)
+                with col1:
+                    if st.button("Clear Regions"):
+                        if st.session_state.current_file in st.session_state.regions_map:
+                            del st.session_state.regions_map[st.session_state.current_file]
+                        st.session_state.canvas_key += 1
+                        st.rerun()
+                
+                with col2:
+                    if st.button("Process Current", type="primary"):
+                        if st.session_state.current_file in st.session_state.regions_map:
+                            scanner = AssignmentScanner()
+                            result = scanner.process_pdf(
+                                st.session_state.current_file,
+                                st.session_state.regions_map.get(st.session_state.current_file, [])
+                            )
+                            if result[0] is not None:
+                                st.session_state.processed_files.add(st.session_state.current_file)
+                                st.session_state.current_result = result
+                                st.rerun()
+                
+                # Drawing canvas
+                display_image = current_preview.resize(
+                    (display_width, DISPLAY_HEIGHT), 
+                    Image.Resampling.LANCZOS
                 )
+                
+                # Show existing regions if any
+                existing_regions = st.session_state.regions_map.get(st.session_state.current_file, [])
+                existing_objects = []
+                if existing_regions:
+                    for region in existing_regions:
+                        # Convert back to display coordinates
+                        display_region = {
+                            'type': 'rect',
+                            'left': region[0] * scale_factor,
+                            'top': region[1] * scale_factor,
+                            'width': (region[2] - region[0]) * scale_factor,
+                            'height': (region[3] - region[1]) * scale_factor,
+                            'fill': 'rgba(255, 165, 0, 0.3)',
+                            'stroke': '#e00',
+                            'strokeWidth': 2
+                        }
+                        existing_objects.append(display_region)
+                
+                # Track previous number of objects to detect new region completion
+                prev_objects_key = f"prev_objects_{st.session_state.current_file}"
+                if prev_objects_key not in st.session_state:
+                    st.session_state[prev_objects_key] = len(existing_objects)
+                
+                canvas_result = st_canvas(
+                    fill_color="rgba(255, 165, 0, 0.3)",
+                    stroke_width=2,
+                    stroke_color="#e00",
+                    background_image=display_image,
+                    drawing_mode="rect",
+                    initial_drawing={"version": "4.4.0", "objects": existing_objects} if existing_objects else None,
+                    key=f"canvas_{st.session_state.canvas_key}",
+                    height=DISPLAY_HEIGHT,
+                    width=display_width,
+                    update_streamlit=True
+                )
+                
+                # Handle canvas drawing results
+                if (canvas_result.json_data is not None and 
+                    canvas_result.json_data.get("objects") and 
+                    len(canvas_result.json_data["objects"]) > st.session_state[prev_objects_key]):
+                    # Only update when a new region is completed
+                    regions = canvas_result.json_data["objects"]
+                    # Convert drawn regions back to original image coordinates
+                    current_regions = [
+                        (
+                            max(0, int(r['left'] / scale_factor)),
+                            max(0, int(r['top'] / scale_factor)),
+                            min(current_preview.width, int((r['left'] + r['width']) / scale_factor)),
+                            min(current_preview.height, int((r['top'] + r['height']) / scale_factor))
+                        )
+                        for r in regions
+                    ]
+                    st.session_state.regions_map[st.session_state.current_file] = current_regions
+                    st.session_state[prev_objects_key] = len(regions)
+                    st.write(f"Saved {len(current_regions)} regions for {os.path.basename(st.session_state.current_file)}")
+                
+                # Navigation buttons with file info
+                remaining_files = [f for f in st.session_state.uploaded_files 
+                                 if f not in st.session_state.processed_files]
+                
+                # Show navigation controls
+                nav_col1, nav_col2, nav_col3 = st.columns([1, 2, 1])
+                
+                with nav_col1:
+                    # Get current file index
+                    current_idx = st.session_state.uploaded_files.index(st.session_state.current_file)
+                    if current_idx > 0:
+                        if st.button("◀ Previous"):
+                            prev_file = st.session_state.uploaded_files[current_idx - 1]
+                            st.session_state.current_file = prev_file
+                            if prev_file in st.session_state.stacked_previews:
+                                st.session_state.current_image = st.session_state.stacked_previews[prev_file]
+                            else:
+                                if prev_file not in st.session_state.first_page_previews:
+                                    preview = load_first_page(prev_file, stack_preview=False)
+                                    st.session_state.first_page_previews[prev_file] = preview
+                                st.session_state.current_image = st.session_state.first_page_previews[prev_file]
+                            st.session_state.canvas_key += 1
+                            st.rerun()
+                
+                with nav_col2:
+                    st.write(f"File {current_idx + 1} of {len(st.session_state.uploaded_files)}")
+                    st.write(os.path.basename(st.session_state.current_file))
+                    if st.session_state.current_file in st.session_state.regions_map:
+                        st.write(f"Regions: {len(st.session_state.regions_map[st.session_state.current_file])}")
+                
+                with nav_col3:
+                    if remaining_files:
+                        if st.button("Next ▶", type="primary"):
+                            next_file = remaining_files[0]
+                            st.session_state.current_file = next_file
+                            if next_file in st.session_state.stacked_previews:
+                                st.session_state.current_image = st.session_state.stacked_previews[next_file]
+                            else:
+                                if next_file not in st.session_state.first_page_previews:
+                                    preview = load_first_page(next_file, stack_preview=False)
+                                    st.session_state.first_page_previews[next_file] = preview
+                                st.session_state.current_image = st.session_state.first_page_previews[next_file]
+                            st.session_state.canvas_key += 1
+                            st.rerun()
+    
+    # Right Column: Previews and Results
+    with preview_col:
+        if st.session_state.step == 1 and st.session_state.uploaded_files:
+            st.header("Previews")
+            
+            # File navigation controls
+            col1, col2, col3 = st.columns([1, 3, 1])
+            with col1:
+                if st.button("◀", disabled=st.session_state.preview_file_index == 0):
+                    st.session_state.preview_file_index = max(0, st.session_state.preview_file_index - 1)
+                    st.rerun()
+            
+            with col2:
+                current_file = st.session_state.uploaded_files[st.session_state.preview_file_index]
+                st.write(f"File {st.session_state.preview_file_index + 1} of {len(st.session_state.uploaded_files)}")
+                st.write(os.path.basename(current_file))
+            
+            with col3:
+                if st.button("▶", disabled=st.session_state.preview_file_index >= len(st.session_state.uploaded_files) - 1):
+                    st.session_state.preview_file_index = min(len(st.session_state.uploaded_files) - 1, 
+                                                            st.session_state.preview_file_index + 1)
+                    st.rerun()
+            
+            # Show preview based on whether stacked preview is available
+            current_file = st.session_state.uploaded_files[st.session_state.preview_file_index]
+            
+            if current_file in st.session_state.stacked_previews:
+                # Show stacked preview
+                preview_image = st.session_state.stacked_previews[current_file]
+                st.image(preview_image, caption="Stacked Preview", use_column_width=True)
+            else:
+                # Show or generate first page preview
+                if current_file not in st.session_state.first_page_previews:
+                    try:
+                        preview = load_first_page(current_file, stack_preview=False)
+                        st.session_state.first_page_previews[current_file] = preview
+                    except Exception as e:
+                        st.error(f"Error loading preview: {str(e)}")
+                        preview = None
+                else:
+                    preview = st.session_state.first_page_previews[current_file]
+                
+                if preview is not None:
+                    st.image(preview, caption="First Page Preview", use_column_width=True)
+        
+        elif st.session_state.step == 2:
+            st.header("Results")
+            # Show current regions
+            if st.session_state.current_file in st.session_state.regions_map:
+                current_regions = st.session_state.regions_map[st.session_state.current_file]
+                st.write(f"Regions: {len(current_regions)}")
+                
+                # Show processed result if available
+                if st.session_state.current_result is not None:
+                    try:
+                        img, filename = st.session_state.current_result
+                        if img is not None and filename is not None:
+                            preview_height = 400
+                            preview_scale = preview_height / img.height
+                            preview_width = int(img.width * preview_scale)
+                            preview_img = img.resize(
+                                (preview_width, preview_height),
+                                Image.Resampling.LANCZOS
+                            )
+                            st.image(preview_img, caption=filename)
+                            
+                            scanner = AssignmentScanner()
+                            jpg_bytes = scanner.get_image_bytes(img)
+                            st.download_button(
+                                label=f"Download {filename}",
+                                data=jpg_bytes,
+                                file_name=filename,
+                                mime="image/jpeg",
+                                type="primary"
+                            )
+                        else:
+                            st.error("Failed to process the current file. The result was empty.")
+                    except (TypeError, ValueError, AttributeError) as e:
+                        st.error(f"Error displaying result: {str(e)}")
+                        st.session_state.current_result = None
+            
+            # Show completion options
+            if not remaining_files:
+                st.success("All files processed!")
+                if len(st.session_state.processed_files) > 1:
+                    st.write("### Download All")
+                    scanner = AssignmentScanner()
+                    results = scanner.process_multiple_pdfs(
+                        list(st.session_state.processed_files),
+                        st.session_state.regions_map
+                    )
+                    if results:
+                        zip_buffer = BytesIO()
+                        with zipfile.ZipFile(zip_buffer, "w") as zip_file:
+                            for img, filename in results:
+                                img_bytes = scanner.get_image_bytes(img)
+                                zip_file.writestr(filename, img_bytes)
+                        st.download_button(
+                            label="Download All as ZIP",
+                            data=zip_buffer.getvalue(),
+                            file_name="processed_files.zip",
+                            mime="application/zip",
+                            type="primary"
+                        )
 
 
 if __name__ == "__main__":
