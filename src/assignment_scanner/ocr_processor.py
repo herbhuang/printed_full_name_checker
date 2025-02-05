@@ -250,7 +250,8 @@ class QwenEngine(OCREngine):
             print("Loading model and processor...")
             self._model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
                 model_path,
-                torch_dtype="auto",
+                torch_dtype=torch.bfloat16,
+                attn_implementation="flash_attention_2",
                 device_map="auto"
             )
             
@@ -274,11 +275,7 @@ class QwenEngine(OCREngine):
         self,
         image: Image.Image,
         with_region: bool = False,
-        max_new_tokens: int = 128,
-        temperature: float = 0.0,
-        min_pixels: Optional[int] = None,
-        max_pixels: Optional[int] = None,
-        use_flash_attention: bool = False,
+        prompt: Optional[str] = None,
         **kwargs
     ) -> Dict[str, Any]:
         """Process image with Qwen2.5-VL OCR."""
@@ -292,12 +289,20 @@ class QwenEngine(OCREngine):
             if image.mode != 'RGB':
                 image = image.convert('RGB')
             
-            # Create messages with appropriate prompt
-            prompt = (
-                "Please analyze this image and identify all text regions. For each text region, "
-                "provide the text content and its location in the format 'text: (x1, y1, x2, y2)'."
-            ) if with_region else "Please extract and transcribe all text visible in this image."
+            # Use custom prompt if provided, otherwise use default
+            if not prompt:
+                prompt = (
+                    "Please analyze this image and identify text regions. For each region, "
+                    "extract only the first word and provide its location in the format "
+                    "'first_word: (x1, y1, x2, y2)'. Ignore all other words in each region."
+                ) if with_region else (
+                    "Please extract only the first word from any text visible in this image. "
+                    "Ignore all other words and just return the first word you see."
+                )
             
+            print(f"[DEBUG] Using prompt: {prompt}")  # Debug print
+            
+            # Create messages in the exact format from the example
             messages = [
                 {
                     "role": "user",
@@ -306,55 +311,48 @@ class QwenEngine(OCREngine):
                             "type": "image",
                             "image": image,
                         },
-                        {"type": "text", "text": prompt},
+                        {
+                            "type": "text", 
+                            "text": prompt
+                        },
                     ],
                 }
             ]
             
-            # Prepare inputs for inference
+            # Prepare inputs for inference exactly as in the example
             text = self._processor.apply_chat_template(
                 messages,
                 tokenize=False,
                 add_generation_prompt=True
             )
             
+            print(f"[DEBUG] Generated chat template: {text}")  # Debug print
+            
             # Process vision info
             image_inputs, video_inputs = self.process_vision_info(messages)
             
-            # Create processor inputs
-            processor_kwargs = {
-                "text": [text],
-                "images": image_inputs,
-                "videos": video_inputs,
-                "padding": True,
-                "return_tensors": "pt"
-            }
-            
-            # Add pixel limits if specified
-            if min_pixels is not None and max_pixels is not None:
-                processor_kwargs["min_pixels"] = min_pixels
-                processor_kwargs["max_pixels"] = max_pixels
-            
-            inputs = self._processor(**processor_kwargs)
+            # Create processor inputs with exact same parameters
+            inputs = self._processor(
+                text=[text],
+                images=image_inputs,
+                videos=video_inputs,
+                padding=True,
+                return_tensors="pt"
+            )
             
             # Move inputs to appropriate device
             device = next(self._model.parameters()).device
             inputs = inputs.to(device)
             
-            # Update model configuration if using flash attention
-            if use_flash_attention and hasattr(self._model.config, 'attn_implementation'):
-                self._model.config.attn_implementation = "flash_attention_2"
-                self._model.config.torch_dtype = torch.bfloat16
-            
-            # Generate output
+            # Generate output with default settings
             generated_ids = self._model.generate(
                 **inputs,
-                max_new_tokens=max_new_tokens,
-                do_sample=True if temperature > 0 else False,
-                temperature=temperature
+                max_new_tokens=512,  # Increased for longer responses
+                do_sample=False,     # Fixed default
+                temperature=0.0      # Fixed default
             )
             
-            # Trim and decode output
+            # Trim and decode output exactly as in the example
             generated_ids_trimmed = [
                 out_ids[len(in_ids):] for in_ids, out_ids in zip(inputs.input_ids, generated_ids)
             ]
@@ -363,6 +361,8 @@ class QwenEngine(OCREngine):
                 skip_special_tokens=True,
                 clean_up_tokenization_spaces=False
             )[0]
+            
+            print(f"[DEBUG] Raw model output: {output_text}")  # Debug print
             
             # Parse region information if requested
             if with_region:
@@ -390,7 +390,7 @@ class QwenEngine(OCREngine):
                         }
                     }
                 except Exception as e:
-                    print(f"Error parsing region information: {e}")
+                    print(f"[DEBUG] Error parsing region information: {e}")
             
             return {
                 'text': output_text.strip(),
@@ -401,8 +401,8 @@ class QwenEngine(OCREngine):
             }
             
         except Exception as e:
-            print(f"Error processing image with Qwen: {str(e)}")
-            print("Detailed error information:")
+            print(f"[DEBUG] Error processing image with Qwen: {str(e)}")
+            print("[DEBUG] Detailed error information:")
             import traceback
             traceback.print_exc()
             return {
@@ -471,12 +471,18 @@ class OCRProcessor:
             elif method in ["qwen", "qwen_with_region"]:
                 if self.qwen_engine is None:
                     raise RuntimeError("Qwen engine is not available. Please check installation and GPU requirements.")
-                kwargs_copy = kwargs.copy()
-                kwargs_copy.pop('with_region', None)
+                
+                # Extract prompt and region flag from kwargs
+                prompt = kwargs.get('prompt')
+                with_region = method == "qwen_with_region"
+                
+                # Print for debugging
+                print(f"Processing with Qwen engine. Prompt: {prompt}, With Region: {with_region}")
+                
                 result = self.qwen_engine.process_image(
                     img, 
-                    with_region=(method == "qwen_with_region"),
-                    **kwargs_copy
+                    with_region=with_region,
+                    prompt=prompt
                 )
             else:
                 raise ValueError(f"Unknown OCR method: {method}")

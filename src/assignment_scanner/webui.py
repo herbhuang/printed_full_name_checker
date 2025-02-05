@@ -428,8 +428,7 @@ def main():
                 if optimize_for_ocr:
                     processed_img = processor.optimize_for_ocr(
                         img,
-                        preserve_dpi=True,
-                        **st.session_state.ocr_settings
+                        preserve_dpi=True
                     )
                 else:
                     processed_img = img
@@ -448,8 +447,7 @@ def main():
             if stitched and optimize_for_ocr:
                 stitched = processor.optimize_for_ocr(
                     stitched,
-                    preserve_dpi=True,
-                    **st.session_state.ocr_settings
+                    preserve_dpi=True
                 )
             st.session_state.stitched_image = stitched
             st.session_state.processed_regions = None
@@ -857,43 +855,45 @@ def main():
                     - High accuracy text recognition
                     - Region detection capability with precise coordinates
                     """)
-                    
-                with st.expander("Advanced Settings"):
-                    col1, col2 = st.columns(2)
-                    with col1:
-                        max_tokens = st.slider("Maximum Output Tokens", 128, 2048, 128,
-                                             help="Maximum number of tokens in the output")
-                        temperature = st.slider("Temperature", 0.0, 1.0, 0.0,
-                                              help="Higher values make the output more random")
-                    
-                    with col2:
-                        use_flash_attention = st.checkbox("Use Flash Attention", value=True,
-                                                        help="Enable for better performance on supported GPUs")
-                        
-                    # Visual token settings
-                    st.markdown("##### Visual Token Settings")
-                    st.caption("Adjust these settings to balance between performance and memory usage")
-                    token_col1, token_col2 = st.columns(2)
-                    with token_col1:
-                        min_token_multiplier = st.slider("Min Token Multiplier", 1, 10, 4,
-                                                       help="Lower value = faster processing")
-                        min_pixels = min_token_multiplier * 64 * 64
-                    with token_col2:
-                        max_token_multiplier = st.slider("Max Token Multiplier", 10, 40, 20,
-                                                       help="Lower value = less memory usage")
-                        max_pixels = max_token_multiplier * 64 * 64
-                    
-                    if max_token_multiplier <= min_token_multiplier:
-                        st.warning("Max token multiplier should be greater than min token multiplier")
                 
+                # Add prompt configuration
+                st.markdown("##### Prompt Configuration")
+                default_prompt = (
+                    "Please extract only the first word from any text visible in this image. "
+                    "Ignore all other words and just return the first word you see."
+                )
+                if "with Region" in ocr_method:
+                    default_prompt = (
+                        "Please analyze this image and identify text regions. For each region, "
+                        "extract only the first word and provide its location in the format "
+                        "'first_word: (x1, y1, x2, y2)'. Ignore all other words in each region."
+                    )
+                
+                # Store the prompt in session state to persist between reruns
+                if 'custom_prompt' not in st.session_state:
+                    st.session_state.custom_prompt = default_prompt
+                
+                prompt = st.text_area(
+                    "Custom Prompt",
+                    value=st.session_state.custom_prompt,
+                    help="Customize the instruction given to the model for text extraction",
+                    key="prompt_input"
+                )
+                
+                # Update session state when prompt changes
+                if prompt != st.session_state.custom_prompt:
+                    st.session_state.custom_prompt = prompt
+                
+                # Set OCR settings with only prompt customization
                 st.session_state.ocr_settings['kwargs'] = {
-                    'max_new_tokens': max_tokens,
-                    'temperature': temperature,
                     'with_region': "with Region" in ocr_method,
-                    'use_flash_attention': use_flash_attention,
-                    'min_pixels': min_pixels,
-                    'max_pixels': max_pixels
+                    'prompt': st.session_state.custom_prompt  # Only customizable parameter
                 }
+                
+                # Debug print
+                st.write("Debug - Current OCR settings:")
+                st.write(f"Prompt: {st.session_state.custom_prompt}")
+                st.write(f"With Region: {'with Region' in ocr_method}")
             
             st.session_state.ocr_settings['method'] = ocr_method
             
@@ -924,8 +924,7 @@ def main():
                     if optimize_for_ocr:
                         img = processor.optimize_for_ocr(
                             img,
-                            preserve_dpi=True,
-                            **st.session_state.ocr_settings
+                            preserve_dpi=True
                         )
                     st.image(img)
             else:
@@ -941,8 +940,7 @@ def main():
                     if optimize_for_ocr:
                         preview = processor.optimize_for_ocr(
                             preview,
-                            preserve_dpi=True,
-                            **st.session_state.ocr_settings
+                            preserve_dpi=True
                         )
                     st.image(preview, caption="Stitched Output", use_column_width=True)
         
@@ -991,6 +989,13 @@ def main():
                                     method=method,
                                     **kwargs
                                 )[0]
+                                
+                                # Debug print to verify prompt passing
+                                st.write("Debug - Processing image with:")
+                                st.write(f"Method: {method}")
+                                st.write(f"Prompt: {kwargs.get('prompt')}")
+                                st.write(f"With Region: {kwargs.get('with_region')}")
+                                
                                 results.append(result)
                             except Exception as e:
                                 st.warning(f"Error processing region {i+1}: {str(e)}")
