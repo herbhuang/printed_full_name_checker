@@ -449,7 +449,8 @@ def main():
         step_names = {
             1: "Upload File",
             2: "Draw Regions",
-            3: "Process Regions"
+            3: "Process Regions",
+            4: "OCR Text"
         }
         
         for step_num, step_name in step_names.items():
@@ -672,8 +673,12 @@ def main():
                 # OCR optimization option
                 optimize_for_ocr = st.checkbox("Apply Optimization to All Regions", value=True)
                 
-                # Save button
-                save_button = st.button("Save Processed Regions", type="primary")
+                # Save and OCR buttons in a row
+                button_cols = st.columns(2)
+                with button_cols[0]:
+                    save_button = st.button("Save Processed Regions", type="primary")
+                with button_cols[1]:
+                    start_ocr_button = st.button("Start OCR", type="primary")
                 
                 # Save current optimization settings to session state
                 if optimize_for_ocr:
@@ -736,6 +741,150 @@ def main():
                 )
                 with preview_cols[1]:
                     st.image(optimized, use_column_width=True)
+
+                # Handle Start OCR button
+                if start_ocr_button:
+                    # Save the current optimization settings to session state for OCR step
+                    if not hasattr(st.session_state, 'ocr_settings'):
+                        st.session_state.ocr_settings = {}
+                    
+                    # Save the processed regions for OCR step
+                    processed_regions = []
+                    for img in region_images:
+                        if optimize_for_ocr:
+                            processed_img = processor.optimize_for_ocr(
+                                img,
+                                preserve_dpi=True,
+                                **st.session_state.ocr_settings
+                            )
+                        else:
+                            processed_img = img
+                        processed_regions.append(processed_img)
+                    
+                    # Store processed regions in session state
+                    st.session_state.processed_regions = processed_regions
+                    
+                    # Move to next step (OCR step)
+                    st.session_state.step = 4
+                    st.rerun()
+
+        elif st.session_state.step == 4:
+            if not hasattr(st.session_state, 'processed_regions'):
+                st.warning("No processed regions found. Please go back to step 3 and process regions first.")
+                return
+            
+            st.header("OCR Text")
+            
+            # OCR Method Selection
+            ocr_method = st.selectbox(
+                "Select OCR Method",
+                ["Tesseract (Default)", "EasyOCR", "PaddleOCR"],
+                index=0
+            )
+            
+            # Language Selection
+            if ocr_method == "Tesseract (Default)":
+                languages = ["eng", "eng+fra", "eng+deu", "eng+spa"]
+                lang = st.selectbox("Select Language", languages, index=0)
+                
+                # Tesseract-specific settings
+                with st.expander("Advanced Settings"):
+                    psm_mode = st.slider("Page Segmentation Mode (PSM)", 0, 13, 6,
+                                       help="PSM modes: 6=Uniform block of text, 3=Auto, etc.")
+                    oem_mode = st.slider("OCR Engine Mode (OEM)", 0, 3, 3,
+                                       help="OEM modes: 3=Default, 1=Neural nets LSTM only")
+                    whitelist = st.text_input("Character Whitelist", 
+                                            "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789")
+            
+            elif ocr_method == "EasyOCR":
+                languages = ["en", "fr", "de", "es"]
+                lang = st.selectbox("Select Language", languages, index=0)
+                
+                # EasyOCR-specific settings
+                with st.expander("Advanced Settings"):
+                    paragraph = st.checkbox("Paragraph Detection", value=True)
+                    batch_size = st.slider("Batch Size", 1, 10, 1)
+            
+            else:  # PaddleOCR
+                languages = ["en", "fr", "german", "korean"]
+                lang = st.selectbox("Select Language", languages, index=0)
+                
+                # PaddleOCR-specific settings
+                with st.expander("Advanced Settings"):
+                    use_angle_cls = st.checkbox("Use Angle Classifier", value=True)
+                    rec_batch_num = st.slider("Recognition Batch Size", 1, 10, 1)
+            
+            # OCR Progress
+            progress_placeholder = st.empty()
+            results_placeholder = st.empty()
+            
+            # Start OCR button
+            if st.button("Start OCR", type="primary"):
+                progress_bar = progress_placeholder.progress(0)
+                results = []
+                
+                for i, img in enumerate(st.session_state.processed_regions):
+                    # Update progress
+                    progress = (i + 1) / len(st.session_state.processed_regions)
+                    progress_bar.progress(progress, f"Processing region {i+1}/{len(st.session_state.processed_regions)}")
+                    
+                    # Perform OCR based on selected method
+                    if ocr_method == "Tesseract (Default)":
+                        custom_config = f'--oem {oem_mode} --psm {psm_mode} -c tessedit_char_whitelist="{whitelist}"'
+                        text = pytesseract.image_to_string(img, lang=lang, config=custom_config)
+                    else:
+                        # Placeholder for other OCR methods
+                        text = f"OCR result for region {i+1} using {ocr_method}"
+                    
+                    results.append({
+                        'region': i + 1,
+                        'text': text.strip(),
+                        'method': ocr_method,
+                        'lang': lang
+                    })
+                
+                # Display results
+                with results_placeholder.container():
+                    st.markdown("### OCR Results")
+                    
+                    # Display side by side: Image and OCR text
+                    for i, result in enumerate(results):
+                        st.markdown(f"#### Region {i+1}")
+                        cols = st.columns(2)
+                        
+                        # Show image
+                        with cols[0]:
+                            st.image(st.session_state.processed_regions[i], use_column_width=True)
+                        
+                        # Show OCR text
+                        with cols[1]:
+                            st.text_area("Extracted Text", result['text'], height=200)
+                    
+                    # Export options
+                    export_format = st.selectbox("Export Format", ["TXT", "JSON", "CSV"])
+                    if st.button("Export Results"):
+                        if export_format == "TXT":
+                            txt_content = "\n\n".join([f"Region {r['region']}:\n{r['text']}" for r in results])
+                            st.download_button(
+                                "Download TXT",
+                                txt_content,
+                                file_name="ocr_results.txt"
+                            )
+                        elif export_format == "JSON":
+                            json_content = json.dumps(results, indent=2)
+                            st.download_button(
+                                "Download JSON",
+                                json_content,
+                                file_name="ocr_results.json"
+                            )
+                        else:  # CSV
+                            df = pd.DataFrame(results)
+                            csv_content = df.to_csv(index=False)
+                            st.download_button(
+                                "Download CSV",
+                                csv_content,
+                                file_name="ocr_results.csv"
+                            )
 
     # Right Column: Preview and Results
     with preview_col:
