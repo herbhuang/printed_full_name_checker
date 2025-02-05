@@ -801,6 +801,13 @@ def main():
                 index=0
             )
             
+            # Store OCR settings in session state
+            if 'ocr_settings' not in st.session_state:
+                st.session_state.ocr_settings = {
+                    'method': ocr_method,
+                    'kwargs': {}
+                }
+            
             # Language and Settings based on method
             if ocr_method == "Tesseract (Default)":
                 languages = ["eng", "eng+fra", "eng+deu", "eng+spa"]
@@ -814,6 +821,13 @@ def main():
                                        help="OEM modes: 3=Default, 1=Neural nets LSTM only")
                     whitelist = st.text_input("Character Whitelist", 
                                             "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789")
+                
+                st.session_state.ocr_settings['kwargs'] = {
+                    'lang': lang,
+                    'psm_mode': psm_mode,
+                    'oem_mode': oem_mode,
+                    'whitelist': whitelist
+                }
             
             elif ocr_method.startswith("Florence-2"):
                 with st.expander("Model Information"):
@@ -828,6 +842,11 @@ def main():
                 with st.expander("Advanced Settings"):
                     max_tokens = st.slider("Maximum Output Tokens", 128, 2048, 1024,
                                          help="Maximum number of tokens in the output")
+                
+                st.session_state.ocr_settings['kwargs'] = {
+                    'max_new_tokens': max_tokens,
+                    'with_region': "with Region" in ocr_method
+                }
             
             else:  # Qwen methods
                 with st.expander("Model Information"):
@@ -866,177 +885,21 @@ def main():
                     
                     if max_token_multiplier <= min_token_multiplier:
                         st.warning("Max token multiplier should be greater than min token multiplier")
+                
+                st.session_state.ocr_settings['kwargs'] = {
+                    'max_new_tokens': max_tokens,
+                    'temperature': temperature,
+                    'with_region': "with Region" in ocr_method,
+                    'use_flash_attention': use_flash_attention,
+                    'min_pixels': min_pixels,
+                    'max_pixels': max_pixels
+                }
             
-            # OCR Progress
-            progress_placeholder = st.empty()
-            results_placeholder = st.empty()
+            st.session_state.ocr_settings['method'] = ocr_method
             
             # Start OCR button
             if st.button("Start OCR", type="primary"):
-                try:
-                    # Initialize progress bar
-                    progress_bar = progress_placeholder.progress(0, text="Starting OCR...")
-                    
-                    # Map OCR method to processor method
-                    method_map = {
-                        "Tesseract (Default)": "tesseract",
-                        "Florence-2": "florence",
-                        "Florence-2 with Region": "florence_with_region",
-                        "Qwen2.5-VL": "qwen",
-                        "Qwen2.5-VL with Region": "qwen_with_region"
-                    }
-                    
-                    # Prepare kwargs based on method
-                    kwargs = {}
-                    if ocr_method == "Tesseract (Default)":
-                        kwargs = {
-                            'lang': lang,
-                            'psm_mode': psm_mode,
-                            'oem_mode': oem_mode,
-                            'whitelist': whitelist
-                        }
-                    elif ocr_method.startswith("Florence-2"):
-                        kwargs = {
-                            'max_new_tokens': max_tokens,
-                            'with_region': "with Region" in ocr_method
-                        }
-                    else:  # Qwen methods
-                        kwargs = {
-                            'max_new_tokens': max_tokens,
-                            'temperature': temperature,
-                            'with_region': "with Region" in ocr_method,
-                            'use_flash_attention': use_flash_attention,
-                            'min_pixels': min_pixels,
-                            'max_pixels': max_pixels
-                        }
-                    
-                    results = []
-                    
-                    # Process images based on mode
-                    if st.session_state.stitch_mode == "individual":
-                        if not st.session_state.processed_regions:
-                            raise ValueError("No processed regions available")
-                            
-                        total_images = len(st.session_state.processed_regions)
-                        for i, img in enumerate(st.session_state.processed_regions):
-                            if img is None:
-                                st.warning(f"Skipping region {i+1} - image is None")
-                                continue
-                                
-                            # Update progress
-                            progress = (i + 1) / total_images
-                            progress_bar.progress(progress, text=f"Processing region {i+1} of {total_images}...")
-                            
-                            try:
-                                # Ensure image is in RGB mode
-                                if img.mode != 'RGB':
-                                    img = img.convert('RGB')
-                                
-                                # Process single image
-                                result = st.session_state.ocr_processor.process_batch(
-                                    [img],
-                                    method=method_map[ocr_method],
-                                    **kwargs
-                                )[0]
-                                results.append(result)
-                            except Exception as e:
-                                st.warning(f"Error processing region {i+1}: {str(e)}")
-                                results.append(None)
-                                continue
-                    else:
-                        if st.session_state.stitched_image is None:
-                            raise ValueError("No stitched image available")
-                            
-                        # Update progress for single stitched image
-                        progress_bar.progress(0.5, text="Processing stitched image...")
-                        
-                        # Ensure stitched image is in RGB mode
-                        img = st.session_state.stitched_image
-                        if img.mode != 'RGB':
-                            img = img.convert('RGB')
-                        
-                        # Process stitched image as a single region
-                        result = st.session_state.ocr_processor.process_batch(
-                            [img],
-                            method=method_map[ocr_method],
-                            **kwargs
-                        )[0]
-                        results = [result]
-                    
-                    # Complete progress
-                    progress_bar.progress(1.0, text="OCR completed!")
-                    
-                    # Display results
-                    with results_placeholder.container():
-                        st.markdown("### OCR Results")
-                        
-                        if not results:
-                            st.warning("No results were generated. Please try again or check your input images.")
-                            return
-                        
-                        # Display results based on mode
-                        for i, result in enumerate(results):
-                            if not result:
-                                st.warning(f"No result for region {i+1}")
-                                continue
-                            
-                            title = f"Region {i+1}" if st.session_state.stitch_mode == "individual" else "Stitched Output"
-                            st.markdown(f"#### {title}")
-                            
-                            # Get the corresponding image safely
-                            try:
-                                if st.session_state.stitch_mode == "individual":
-                                    img = st.session_state.processed_regions[i] if i < len(st.session_state.processed_regions) else None
-                                else:
-                                    img = st.session_state.stitched_image
-                                
-                                if img is None:
-                                    st.warning(f"Image not found for {title}")
-                                    continue
-                                
-                                img_height = img.height
-                                text_height = int(img_height * 0.9)
-                                
-                                # Create columns for image and text
-                                img_col, text_col = st.columns(2)
-                                
-                                with img_col:
-                                    st.image(img)
-                                    if 'regions' in result:  # Qwen format
-                                        st.markdown("Detected Regions:")
-                                        for j, region in enumerate(result['regions']):
-                                            st.write(f"- Region {j+1}: {region['text']}")
-                                            st.write(f"  Box: {region['box']}")
-                                    elif 'boxes' in result:  # Florence format
-                                        st.markdown("Detected Regions:")
-                                        boxes = result['boxes']
-                                        labels = result.get('labels', [])
-                                        for j, (box, label) in enumerate(zip(boxes, labels)):
-                                            st.write(f"- Region {j+1}: {label}")
-                                            st.write(f"  Box: {box}")
-                                
-                                with text_col:
-                                    st.text_area("Extracted Text", 
-                                               result.get('text', ''),
-                                               height=text_height,
-                                               key=f"text_area_{i}")
-                                    
-                                    # Show raw output for debugging
-                                    if 'raw_output' in result:
-                                        with st.expander("Raw Model Output"):
-                                            st.code(str(result['raw_output']))
-                                
-                            except Exception as e:
-                                st.error(f"Error displaying result for {title}: {str(e)}")
-                                continue
-                            
-                            st.markdown("<br>", unsafe_allow_html=True)
-                            
-                except Exception as e:
-                    import traceback
-                    st.error(f"An error occurred: {str(e)}")
-                    st.error("Traceback:")
-                    st.code(traceback.format_exc())
+                st.session_state.start_ocr = True
 
     # Right Column: Preview and Results
     with preview_col:
@@ -1064,7 +927,7 @@ def main():
                             preserve_dpi=True,
                             **st.session_state.ocr_settings
                         )
-                    st.image(img)  # Remove use_column_width=True for original size
+                    st.image(img)
             else:
                 # Preview stitched result
                 if st.session_state.stitch_mode == "vertical":
@@ -1082,66 +945,147 @@ def main():
                             **st.session_state.ocr_settings
                         )
                     st.image(preview, caption="Stitched Output", use_column_width=True)
+        
+        elif st.session_state.step == 4:
+            st.header("OCR Results")
             
-            # Handle saving
-            if save_button:
-                # Create output directory
-                output_dir = Path("processed_regions")
-                output_dir.mkdir(exist_ok=True)
+            # Process OCR if button was clicked
+            if hasattr(st.session_state, 'start_ocr') and st.session_state.start_ocr:
+                # Initialize progress bar
+                progress_bar = st.progress(0, text="Starting OCR...")
                 
-                # Save individual regions
-                for i, img in enumerate(region_images):
-                    if optimize_for_ocr:
-                        img = processor.optimize_for_ocr(
-                            img,
-                            preserve_dpi=True,
-                            **st.session_state.ocr_settings
-                        )
-                    output_path = output_dir / f"region_{i+1}.png"
-                    processor.save_high_quality(img, output_path)
-                
-                # Save stitched result if not in individual mode
-                if st.session_state.stitch_mode != "individual":
-                    if st.session_state.stitch_mode == "vertical":
-                        preview = stitch_regions_vertically(images=region_images)
-                    elif st.session_state.stitch_mode == "horizontal":
-                        preview = stitch_regions_horizontally(images=region_images)
-                    else:  # grid
-                        preview = stitch_regions_grid(images=region_images, max_cols=max_cols)
+                try:
+                    # Map OCR method to processor method
+                    method_map = {
+                        "Tesseract (Default)": "tesseract",
+                        "Florence-2": "florence",
+                        "Florence-2 with Region": "florence_with_region",
+                        "Qwen2.5-VL": "qwen",
+                        "Qwen2.5-VL with Region": "qwen_with_region"
+                    }
                     
-                    if preview and optimize_for_ocr:
-                        preview = processor.optimize_for_ocr(
-                            preview,
-                            preserve_dpi=True,
-                            **st.session_state.ocr_settings
-                        )
+                    results = []
+                    method = method_map[st.session_state.ocr_settings['method']]
+                    kwargs = st.session_state.ocr_settings['kwargs']
                     
-                    output_path = output_dir / f"stitched_{st.session_state.stitch_mode}.png"
-                    processor.save_high_quality(preview, output_path)
-                
-                st.success(f"Saved processed regions to {output_dir}")
-                
-                # Create download button
-                zip_buffer = BytesIO()
-                with zipfile.ZipFile(zip_buffer, "w") as zip_file:
-                    # Add individual regions
-                    for i in range(len(region_images)):
-                        region_path = output_dir / f"region_{i+1}.png"
-                        zip_file.write(region_path, region_path.name)
+                    # Process images based on mode
+                    if st.session_state.stitch_mode == "individual":
+                        total_images = len(st.session_state.processed_regions)
+                        for i, img in enumerate(st.session_state.processed_regions):
+                            if img is None:
+                                st.warning(f"Skipping region {i+1} - image is None")
+                                continue
+                            
+                            # Update progress
+                            progress = (i + 1) / total_images
+                            progress_bar.progress(progress, text=f"Processing region {i+1} of {total_images}...")
+                            
+                            try:
+                                # Ensure image is in RGB mode
+                                if img.mode != 'RGB':
+                                    img = img.convert('RGB')
+                                
+                                # Process single image
+                                result = st.session_state.ocr_processor.process_batch(
+                                    [img],
+                                    method=method,
+                                    **kwargs
+                                )[0]
+                                results.append(result)
+                            except Exception as e:
+                                st.warning(f"Error processing region {i+1}: {str(e)}")
+                                results.append(None)
+                                continue
+                    else:
+                        # Update progress for single stitched image
+                        progress_bar.progress(0.5, text="Processing stitched image...")
+                        
+                        # Ensure stitched image is in RGB mode
+                        img = st.session_state.stitched_image
+                        if img.mode != 'RGB':
+                            img = img.convert('RGB')
+                        
+                        # Process stitched image as a single region
+                        result = st.session_state.ocr_processor.process_batch(
+                            [img],
+                            method=method,
+                            **kwargs
+                        )[0]
+                        results = [result]
                     
-                    # Add stitched result if not in individual mode
-                    if st.session_state.stitch_mode != "individual":
-                        stitched_path = output_dir / f"stitched_{st.session_state.stitch_mode}.png"
-                        zip_file.write(stitched_path, stitched_path.name)
+                    # Complete progress
+                    progress_bar.progress(1.0, text="OCR completed!")
+                    
+                    # Store results in session state
+                    st.session_state.ocr_results = results
+                    st.session_state.start_ocr = False
+                    
+                except Exception as e:
+                    st.error(f"An error occurred: {str(e)}")
+                    st.error("Traceback:")
+                    st.code(traceback.format_exc())
+                    st.session_state.start_ocr = False
+                    return
+            
+            # Display results if available
+            if hasattr(st.session_state, 'ocr_results') and st.session_state.ocr_results:
+                results = st.session_state.ocr_results
                 
-                # Create download button
-                zip_buffer.seek(0)
-                st.download_button(
-                    label="Download All Images (ZIP)",
-                    data=zip_buffer.getvalue(),
-                    file_name="processed_regions.zip",
-                    mime="application/zip"
-                )
+                for i, result in enumerate(results):
+                    if not result:
+                        st.warning(f"No result for region {i+1}")
+                        continue
+                    
+                    title = f"Region {i+1}" if st.session_state.stitch_mode == "individual" else "Stitched Output"
+                    st.markdown(f"#### {title}")
+                    
+                    try:
+                        if st.session_state.stitch_mode == "individual":
+                            img = st.session_state.processed_regions[i] if i < len(st.session_state.processed_regions) else None
+                        else:
+                            img = st.session_state.stitched_image
+                        
+                        if img is None:
+                            st.warning(f"Image not found for {title}")
+                            continue
+                        
+                        img_height = img.height
+                        text_height = int(img_height * 0.9)
+                        
+                        # Create columns for image and text
+                        img_col, text_col = st.columns(2)
+                        
+                        with img_col:
+                            st.image(img)
+                            if 'regions' in result:  # Qwen format
+                                st.markdown("Detected Regions:")
+                                for j, region in enumerate(result['regions']):
+                                    st.write(f"- Region {j+1}: {region['text']}")
+                                    st.write(f"  Box: {region['box']}")
+                            elif 'boxes' in result:  # Florence format
+                                st.markdown("Detected Regions:")
+                                boxes = result['boxes']
+                                labels = result.get('labels', [])
+                                for j, (box, label) in enumerate(zip(boxes, labels)):
+                                    st.write(f"- Region {j+1}: {label}")
+                                    st.write(f"  Box: {box}")
+                        
+                        with text_col:
+                            st.text_area("Extracted Text", 
+                                       result.get('text', ''),
+                                       height=text_height,
+                                       key=f"text_area_{i}")
+                            
+                            # Show raw output for debugging
+                            if 'raw_output' in result:
+                                with st.expander("Raw Model Output"):
+                                    st.code(str(result['raw_output']))
+                        
+                    except Exception as e:
+                        st.error(f"Error displaying result for {title}: {str(e)}")
+                        continue
+                    
+                    st.markdown("<br>", unsafe_allow_html=True)
 
 
 if __name__ == "__main__":
