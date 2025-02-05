@@ -128,7 +128,7 @@ class UIManager:
                     st.session_state.show_regions = True
                     st.session_state.step = 3
                     # Force immediate rerun
-                    st.experimental_rerun()
+                    st.rerun()
                 except Exception as e:
                     st.error(f"Error saving regions: {str(e)}")
             st.button("Save and Next", type="primary", on_click=save_and_next)
