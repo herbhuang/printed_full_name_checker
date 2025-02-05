@@ -40,7 +40,16 @@ class UIManager:
                      on_click=start_redraw)
         
         with check_col:
-            st.checkbox("", value=True, key=f"select_p{page_num}_r{region_num}")
+            def delete_region():
+                self.state_manager.remove_region(
+                    st.session_state.current_file,
+                    page_num,
+                    region_num
+                )
+                st.session_state.needs_rerun = True
+            
+            st.button("🗑️", key=f"delete_p{page_num}_r{region_num}", 
+                     on_click=delete_region)
         
         with page_col:
             st.write(f"P{page_num}")
@@ -105,14 +114,23 @@ class UIManager:
         
         with col3:
             def save_and_next():
-                if canvas_result.json_data and canvas_result.json_data.get("objects"):
-                    self.state_manager.save_canvas_regions(
-                        st.session_state.current_file, 
-                        canvas_result.json_data, 
-                        scale_factor
-                    )
+                try:
+                    # Save any new regions if they exist
+                    if canvas_result.json_data and canvas_result.json_data.get("objects"):
+                        self.state_manager.save_canvas_regions(
+                            st.session_state.current_file, 
+                            canvas_result.json_data, 
+                            scale_factor
+                        )
+                        self.region_processor.process_all_regions(st.session_state.current_file)
+                    
+                    # Always update state to move to next step
+                    st.session_state.show_regions = True
                     st.session_state.step = 3
-                    st.session_state.needs_rerun = True
+                    # Force immediate rerun
+                    st.experimental_rerun()
+                except Exception as e:
+                    st.error(f"Error saving regions: {str(e)}")
             st.button("Save and Next", type="primary", on_click=save_and_next)
         
         return canvas_result, scale_factor
@@ -156,11 +174,24 @@ class UIManager:
             if regions:  # If a new region is drawn
                 # Convert coordinates back to original scale
                 new_region = regions[-1]  # Get the last drawn region
+                
+                # Ensure minimum size (e.g., 10x10 pixels)
+                min_size = 10
+                width = max(min_size, int(new_region['width'] / scale_factor))
+                height = max(min_size, int(new_region['height'] / scale_factor))
+                
+                # Calculate coordinates ensuring minimum size
+                left = int(new_region['left'] / scale_factor)
+                top = int(new_region['top'] / scale_factor)
+                right = left + width
+                bottom = top + height
+                
+                # Clamp coordinates to page boundaries
                 original_coords = (
-                    max(0, int(new_region['left'] / scale_factor)),
-                    max(0, int(new_region['top'] / scale_factor)),
-                    min(page_img.width, int((new_region['left'] + new_region['width']) / scale_factor)),
-                    min(page_img.height, int((new_region['top'] + new_region['height']) / scale_factor))
+                    max(0, left),
+                    max(0, top),
+                    min(page_img.width, right),
+                    min(page_img.height, bottom)
                 )
                 
                 # Update the region

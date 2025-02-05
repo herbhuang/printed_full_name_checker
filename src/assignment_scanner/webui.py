@@ -24,6 +24,7 @@ from src.assignment_scanner.scanner import AssignmentScanner
 from src.assignment_scanner.state_manager import StateManager
 from src.assignment_scanner.region_processor import RegionProcessor
 from src.assignment_scanner.ui_manager import UIManager
+from src.assignment_scanner.image_processor import ImageProcessor
 
 
 def create_stacked_preview(pdf_path: str, dpi: int = 300, alpha: float = 0.3) -> Image.Image:
@@ -585,7 +586,253 @@ def main():
                 else:
                     # Normal drawing mode
                     canvas_result, scale_factor = ui_manager.render_drawing_interface(st.session_state.current_image)
-    
+        
+        elif st.session_state.step == 3:
+            if st.session_state.current_file:
+                st.header("Process Regions")
+                
+                # Get all regions and validate
+                regions = state_manager.get_all_regions(st.session_state.current_file)
+                if not regions:
+                    st.warning("No regions found. Please go back to step 2 and draw regions.")
+                    return
+                
+                # Get all region images
+                region_images = []
+                for region in regions:
+                    region_img = state_manager.get_region_image(
+                        st.session_state.current_file,
+                        region.page_idx,
+                        region.region_idx
+                    )
+                    if region_img:
+                        region_images.append(region_img)
+                
+                if not region_images:
+                    st.warning("No region images found. Please go back to step 2 and ensure regions are properly drawn.")
+                    return
+
+                # Create main layout
+                left_col, right_col = st.columns([0.4, 0.6])
+                
+                with left_col:
+                    st.markdown("### Preprocessing Controls")
+                    
+                    # Step enablers
+                    use_yuv = st.checkbox("Use YUV Conversion", value=True)
+                    use_contrast = st.checkbox("Use Contrast Enhancement", value=True)
+                    use_bilateral = st.checkbox("Use Bilateral Filter", value=True)
+                    use_clahe = st.checkbox("Use CLAHE", value=True)
+                    use_threshold = st.checkbox("Use Adaptive Threshold", value=True)
+                    use_morphology = st.checkbox("Use Morphology", value=True)
+                    use_denoising = st.checkbox("Use Denoising", value=True)
+                    
+                    # Advanced settings expander
+                    with st.expander("Advanced Settings"):
+                        # Contrast settings
+                        st.markdown("##### Contrast Enhancement")
+                        contrast_alpha = st.slider("Contrast Factor", 1.0, 3.0, 1.2, 0.1)
+                        contrast_beta = st.slider("Brightness Adjustment", -50, 50, 0, 1)
+                        
+                        # Bilateral filter settings
+                        st.markdown("##### Bilateral Filter")
+                        bilateral_d = st.slider("Diameter", 1, 15, 1, 2)
+                        bilateral_sigma = st.slider("Sigma", 1, 150, 45, 1)
+                        
+                        # CLAHE settings
+                        st.markdown("##### CLAHE")
+                        clahe_clip = st.slider("Clip Limit", 1.0, 20.0, 9.0, 0.5)
+                        clahe_grid = st.slider("Grid Size", 2, 100, 80, 2)
+                        
+                        # Threshold settings
+                        st.markdown("##### Adaptive Threshold")
+                        threshold_block = st.slider("Block Size", 3, 99, 21, 2)
+                        threshold_c = st.slider("C Constant", -50, 50, 10, 1)
+                        
+                        # Morphology settings
+                        st.markdown("##### Morphology")
+                        morph_size = st.slider("Kernel Size", 1, 5, 2, 1)
+                        morph_iter = st.slider("Iterations", 1, 5, 1, 1)
+                        
+                        # Denoising settings
+                        st.markdown("##### Denoising")
+                        denoise_strength = st.slider("Strength", 1, 20, 1, 1)
+                        denoise_template = st.slider("Template Window", 3, 15, 5, 2)
+                        denoise_search = st.slider("Search Window", 5, 30, 15, 2)
+                    
+                    # Stitch mode selection
+                    stitch_mode = st.selectbox(
+                        "Select Stitch Mode",
+                        ["individual", "vertical", "horizontal", "grid"],
+                        index=0
+                    )
+                    
+                    # Grid options if grid mode selected
+                    if stitch_mode == "grid":
+                        max_cols = st.slider("Maximum Columns", 1, 5, 2)
+                    else:
+                        max_cols = 2
+                    
+                    # OCR optimization option
+                    optimize_for_ocr = st.checkbox("Apply Optimization to All Regions", value=True)
+                    
+                    # Save button
+                    save_button = st.button("Save Processed Regions", type="primary")
+                
+                with right_col:
+                    st.markdown("### Preview")
+                    
+                    # Show original and optimized first region
+                    st.write("Original First Region")
+                    st.image(region_images[0], caption="Original", use_column_width=True)
+                    
+                    # Create optimized version
+                    processor = ImageProcessor()
+                    optimized = processor.optimize_for_ocr(
+                        region_images[0],
+                        preserve_dpi=True,
+                        use_yuv=use_yuv,
+                        use_contrast_enhancement=use_contrast,
+                        use_bilateral_filter=use_bilateral,
+                        use_clahe=use_clahe,
+                        use_adaptive_threshold=use_threshold,
+                        use_morphology=use_morphology,
+                        use_denoising=use_denoising,
+                        contrast_alpha=contrast_alpha,
+                        contrast_beta=contrast_beta,
+                        bilateral_d=bilateral_d,
+                        bilateral_sigma_color=bilateral_sigma,
+                        bilateral_sigma_space=bilateral_sigma,
+                        clahe_clip_limit=clahe_clip,
+                        clahe_grid_size=clahe_grid,
+                        threshold_block_size=threshold_block,
+                        threshold_c=threshold_c,
+                        morph_kernel_size=morph_size,
+                        morph_iterations=morph_iter,
+                        denoise_strength=denoise_strength,
+                        denoise_template_window=denoise_template,
+                        denoise_search_window=denoise_search
+                    )
+                    st.write("Optimized First Region")
+                    st.image(optimized, caption="Optimized", use_column_width=True)
+                    
+                    # Save current optimization settings to session state
+                    if optimize_for_ocr:
+                        st.session_state.ocr_settings = {
+                            'use_yuv': use_yuv,
+                            'use_contrast_enhancement': use_contrast,
+                            'use_bilateral_filter': use_bilateral,
+                            'use_clahe': use_clahe,
+                            'use_adaptive_threshold': use_threshold,
+                            'use_morphology': use_morphology,
+                            'use_denoising': use_denoising,
+                            'contrast_alpha': contrast_alpha,
+                            'contrast_beta': contrast_beta,
+                            'bilateral_d': bilateral_d,
+                            'bilateral_sigma_color': bilateral_sigma,
+                            'bilateral_sigma_space': bilateral_sigma,
+                            'clahe_clip_limit': clahe_clip,
+                            'clahe_grid_size': clahe_grid,
+                            'threshold_block_size': threshold_block,
+                            'threshold_c': threshold_c,
+                            'morph_kernel_size': morph_size,
+                            'morph_iterations': morph_iter,
+                            'denoise_strength': denoise_strength,
+                            'denoise_template_window': denoise_template,
+                            'denoise_search_window': denoise_search
+                        }
+                    
+                    # Show preview of all regions
+                    st.markdown("### All Regions Preview")
+                    if stitch_mode == "individual":
+                        for i, img in enumerate(region_images):
+                            if optimize_for_ocr:
+                                processor = ImageProcessor()
+                                img = processor.optimize_for_ocr(
+                                    img,
+                                    preserve_dpi=True,
+                                    **st.session_state.ocr_settings
+                                )
+                            st.image(img, caption=f"Region {i+1}", use_column_width=True)
+                    else:
+                        # Preview stitched result
+                        if stitch_mode == "vertical":
+                            preview = stitch_regions_vertically(images=region_images)
+                        elif stitch_mode == "horizontal":
+                            preview = stitch_regions_horizontally(images=region_images)
+                        else:  # grid
+                            preview = stitch_regions_grid(images=region_images, max_cols=max_cols)
+                        
+                        if preview:
+                            if optimize_for_ocr:
+                                preview = processor.optimize_for_ocr(
+                                    preview,
+                                    preserve_dpi=True,
+                                    **st.session_state.ocr_settings
+                                )
+                            st.image(preview, caption="All Regions", use_column_width=True)
+                    
+                    # Handle saving
+                    if save_button:
+                        # Create output directory
+                        output_dir = Path("processed_regions")
+                        output_dir.mkdir(exist_ok=True)
+                        
+                        # Save individual regions
+                        processor = ImageProcessor()
+                        for i, img in enumerate(region_images):
+                            if optimize_for_ocr:
+                                img = processor.optimize_for_ocr(
+                                    img,
+                                    preserve_dpi=True,
+                                    **st.session_state.ocr_settings
+                                )
+                            output_path = output_dir / f"region_{i+1}.png"
+                            processor.save_high_quality(img, output_path)
+                        
+                        # Save stitched result if not in individual mode
+                        if stitch_mode != "individual":
+                            if stitch_mode == "vertical":
+                                preview = stitch_regions_vertically(images=region_images)
+                            elif stitch_mode == "horizontal":
+                                preview = stitch_regions_horizontally(images=region_images)
+                            else:  # grid
+                                preview = stitch_regions_grid(images=region_images, max_cols=max_cols)
+                            
+                            if preview and optimize_for_ocr:
+                                preview = processor.optimize_for_ocr(
+                                    preview,
+                                    preserve_dpi=True,
+                                    **st.session_state.ocr_settings
+                                )
+                            
+                            output_path = output_dir / f"stitched_{stitch_mode}.png"
+                            processor.save_high_quality(preview, output_path)
+                        
+                        st.success(f"Saved processed regions to {output_dir}")
+                        
+                        # Create download button
+                        zip_buffer = BytesIO()
+                        with zipfile.ZipFile(zip_buffer, "w") as zip_file:
+                            # Add individual regions
+                            for i in range(len(region_images)):
+                                region_path = output_dir / f"region_{i+1}.png"
+                                zip_file.write(region_path, region_path.name)
+                            
+                            # Add stitched result if not in individual mode
+                            if stitch_mode != "individual":
+                                stitched_path = output_dir / f"stitched_{stitch_mode}.png"
+                                zip_file.write(stitched_path, stitched_path.name)
+                        
+                        # Create download button
+                        zip_buffer.seek(0)
+                        st.download_button(
+                            label="Download All Images (ZIP)",
+                            data=zip_buffer.getvalue(),
+                            file_name="processed_regions.zip",
+                            mime="application/zip"
+                        )
+
     # Right Column: Preview and Results
     with preview_col:
         if st.session_state.step == 1:

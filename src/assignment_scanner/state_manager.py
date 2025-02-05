@@ -156,3 +156,20 @@ class StateManager:
     def get_all_regions(self, file_path: str) -> List[RegionInfo]:
         """Get all regions for a file."""
         return st.session_state.regions.get(file_path, [])
+
+    def remove_region(self, file_path: str, page_idx: int, region_idx: int):
+        """Remove a specific region from a file."""
+        if file_path in st.session_state.regions:
+            # Get current regions
+            regions = st.session_state.regions[file_path]
+            # Filter out the region to remove
+            st.session_state.regions[file_path] = [
+                r for r in regions 
+                if not (r.page_idx == page_idx and r.region_idx == region_idx)
+            ]
+            # Remove the region image
+            region_key = self.get_region_key(file_path, page_idx, region_idx)
+            if region_key in st.session_state.region_images:
+                del st.session_state.region_images[region_key]
+            if region_key in st.session_state.dirty_regions:
+                st.session_state.dirty_regions.remove(region_key)
