@@ -797,7 +797,7 @@ def main():
             # OCR Method Selection
             ocr_method = st.selectbox(
                 "Select OCR Method",
-                ["Tesseract (Default)", "Florence-2", "Florence-2 with Region", "Qwen2-VL", "Qwen2-VL with Region"],
+                ["Tesseract (Default)", "Florence-2", "Florence-2 with Region", "Qwen2.5-VL", "Qwen2.5-VL with Region"],
                 index=0
             )
             
@@ -840,19 +840,32 @@ def main():
                     """)
                     
                 with st.expander("Advanced Settings"):
-                    max_tokens = st.slider("Maximum Output Tokens", 128, 2048, 512,
-                                         help="Maximum number of tokens in the output")
-                    temperature = st.slider("Temperature", 0.0, 1.0, 0.0,
-                                          help="Higher values make the output more random")
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        max_tokens = st.slider("Maximum Output Tokens", 128, 2048, 128,
+                                             help="Maximum number of tokens in the output")
+                        temperature = st.slider("Temperature", 0.0, 1.0, 0.0,
+                                              help="Higher values make the output more random")
                     
-                    # Additional Qwen-specific settings
-                    st.markdown("##### Model Settings")
-                    use_flash_attention = st.checkbox("Use Flash Attention", value=True,
-                                                    help="Enable for better performance on supported GPUs")
-                    min_pixels = st.slider("Minimum Pixels", 128, 512, 256,
-                                         help="Minimum size for image processing (lower = faster)")
-                    max_pixels = st.slider("Maximum Pixels", 512, 2048, 1280,
-                                         help="Maximum size for image processing (lower = less memory)")
+                    with col2:
+                        use_flash_attention = st.checkbox("Use Flash Attention", value=True,
+                                                        help="Enable for better performance on supported GPUs")
+                        
+                    # Visual token settings
+                    st.markdown("##### Visual Token Settings")
+                    st.caption("Adjust these settings to balance between performance and memory usage")
+                    token_col1, token_col2 = st.columns(2)
+                    with token_col1:
+                        min_token_multiplier = st.slider("Min Token Multiplier", 1, 10, 4,
+                                                       help="Lower value = faster processing")
+                        min_pixels = min_token_multiplier * 64 * 64
+                    with token_col2:
+                        max_token_multiplier = st.slider("Max Token Multiplier", 10, 40, 20,
+                                                       help="Lower value = less memory usage")
+                        max_pixels = max_token_multiplier * 64 * 64
+                    
+                    if max_token_multiplier <= min_token_multiplier:
+                        st.warning("Max token multiplier should be greater than min token multiplier")
             
             # OCR Progress
             progress_placeholder = st.empty()
@@ -869,8 +882,8 @@ def main():
                         "Tesseract (Default)": "tesseract",
                         "Florence-2": "florence",
                         "Florence-2 with Region": "florence_with_region",
-                        "Qwen2-VL": "qwen",
-                        "Qwen2-VL with Region": "qwen_with_region"
+                        "Qwen2.5-VL": "qwen",
+                        "Qwen2.5-VL with Region": "qwen_with_region"
                     }
                     
                     # Prepare kwargs based on method
@@ -893,8 +906,8 @@ def main():
                             'temperature': temperature,
                             'with_region': "with Region" in ocr_method,
                             'use_flash_attention': use_flash_attention,
-                            'min_pixels': min_pixels * 28 * 28,
-                            'max_pixels': max_pixels * 28 * 28
+                            'min_pixels': min_pixels,
+                            'max_pixels': max_pixels
                         }
                     
                     results = []

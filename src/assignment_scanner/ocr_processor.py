@@ -211,19 +211,18 @@ class FlorenceEngine(OCREngine):
 
 
 class QwenEngine(OCREngine):
-    """Qwen2-VL-7B OCR engine implementation using HuggingFace transformers."""
+    """Qwen2.5-VL OCR engine implementation using HuggingFace transformers."""
     
     _instance = None
     _model = None
     _processor = None
-    _tokenizer = None
     
     def __new__(cls, *args, **kwargs):
         if cls._instance is None:
             cls._instance = super(QwenEngine, cls).__new__(cls)
         return cls._instance
     
-    def __init__(self, model_path: str = "Qwen/Qwen2-VL-7B-Instruct"):
+    def __init__(self, model_path: str = "Qwen/Qwen2.5-VL-7B-Instruct"):
         """Initialize Qwen engine with HuggingFace transformers."""
         if self._model is not None:
             return
@@ -233,7 +232,7 @@ class QwenEngine(OCREngine):
             
             # First check if transformers is installed
             try:
-                from transformers import Qwen2VLForConditionalGeneration, AutoProcessor, AutoTokenizer
+                from transformers import Qwen2_5_VLForConditionalGeneration, AutoProcessor
                 from qwen_vl_utils import process_vision_info
                 print("Successfully imported transformers and qwen_vl_utils")
             except ImportError as e:
@@ -249,21 +248,14 @@ class QwenEngine(OCREngine):
             
             # Initialize model with flash attention
             print("Loading model and processor...")
-            self._model = Qwen2VLForConditionalGeneration.from_pretrained(
+            self._model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
                 model_path,
-                torch_dtype=torch.bfloat16,
-                attn_implementation="flash_attention_2",
+                torch_dtype="auto",
                 device_map="auto"
             )
             
-            # Initialize processor with custom pixel settings for better memory usage
-            min_pixels = 256*28*28  # Minimum size for good OCR
-            max_pixels = 1280*28*28  # Maximum size to balance memory and quality
-            self._processor = AutoProcessor.from_pretrained(
-                model_path,
-                min_pixels=min_pixels,
-                max_pixels=max_pixels
-            )
+            # Initialize processor
+            self._processor = AutoProcessor.from_pretrained(model_path)
             
             # Store process_vision_info function
             self.process_vision_info = process_vision_info
@@ -282,11 +274,14 @@ class QwenEngine(OCREngine):
         self,
         image: Image.Image,
         with_region: bool = False,
-        max_new_tokens: int = 512,
+        max_new_tokens: int = 128,
         temperature: float = 0.0,
+        min_pixels: Optional[int] = None,
+        max_pixels: Optional[int] = None,
+        use_flash_attention: bool = False,
         **kwargs
     ) -> Dict[str, Any]:
-        """Process image with Qwen2-VL OCR."""
+        """Process image with Qwen2.5-VL OCR."""
         try:
             # Check if model is properly initialized
             if self._model is None or self._processor is None:
@@ -322,31 +317,44 @@ class QwenEngine(OCREngine):
                 tokenize=False,
                 add_generation_prompt=True
             )
+            
+            # Process vision info
             image_inputs, video_inputs = self.process_vision_info(messages)
-            inputs = self._processor(
-                text=[text],
-                images=image_inputs,
-                videos=video_inputs,
-                padding=True,
-                return_tensors="pt"
-            )
+            
+            # Create processor inputs
+            processor_kwargs = {
+                "text": [text],
+                "images": image_inputs,
+                "videos": video_inputs,
+                "padding": True,
+                "return_tensors": "pt"
+            }
+            
+            # Add pixel limits if specified
+            if min_pixels is not None and max_pixels is not None:
+                processor_kwargs["min_pixels"] = min_pixels
+                processor_kwargs["max_pixels"] = max_pixels
+            
+            inputs = self._processor(**processor_kwargs)
             
             # Move inputs to appropriate device
             device = next(self._model.parameters()).device
             inputs = inputs.to(device)
             
-            # Generate output with better parameters
+            # Update model configuration if using flash attention
+            if use_flash_attention and hasattr(self._model.config, 'attn_implementation'):
+                self._model.config.attn_implementation = "flash_attention_2"
+                self._model.config.torch_dtype = torch.bfloat16
+            
+            # Generate output
             generated_ids = self._model.generate(
                 **inputs,
                 max_new_tokens=max_new_tokens,
                 do_sample=True if temperature > 0 else False,
-                temperature=temperature,
-                num_beams=3,
-                length_penalty=1.0,
-                repetition_penalty=1.1
+                temperature=temperature
             )
             
-            # Decode output
+            # Trim and decode output
             generated_ids_trimmed = [
                 out_ids[len(in_ids):] for in_ids, out_ids in zip(inputs.input_ids, generated_ids)
             ]
