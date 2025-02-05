@@ -25,6 +25,7 @@ from src.assignment_scanner.state_manager import StateManager
 from src.assignment_scanner.region_processor import RegionProcessor
 from src.assignment_scanner.ui_manager import UIManager
 from src.assignment_scanner.image_processor import ImageProcessor
+from src.assignment_scanner.ocr_processor import OCRProcessor
 
 
 def create_stacked_preview(pdf_path: str, dpi: int = 300, alpha: float = 0.3) -> Image.Image:
@@ -364,6 +365,97 @@ def create_stacked_preview_from_pages(pages: List[Image.Image], alpha: float = 0
 def main():
     st.set_page_config(layout="wide")
     
+    # Initialize session state variables
+    if 'step' not in st.session_state:
+        st.session_state.step = 1
+    if 'canvas_key' not in st.session_state:
+        st.session_state.canvas_key = 0
+    if 'current_file' not in st.session_state:
+        st.session_state.current_file = None
+    if 'current_image' not in st.session_state:
+        st.session_state.current_image = None
+    if 'ocr_settings' not in st.session_state:
+        st.session_state.ocr_settings = {}
+    if 'processed_regions' not in st.session_state:
+        st.session_state.processed_regions = None
+    if 'stitch_mode' not in st.session_state:
+        st.session_state.stitch_mode = "individual"
+
+    # Initialize OCR processor with error handling
+    if 'ocr_processor' not in st.session_state:
+        try:
+            st.session_state.ocr_processor = OCRProcessor()
+        except Exception as e:
+            st.error(f"Error initializing OCR processor: {str(e)}")
+            st.error("Some OCR methods may not be available. Please check your GPU and CUDA installation.")
+            # Create a basic processor without VLLM models
+            st.session_state.ocr_processor = OCRProcessor(skip_vllm=True)
+
+    def handle_start_ocr():
+        # Save the current optimization settings to session state for OCR step
+        st.session_state.ocr_settings = {
+            'use_yuv': use_yuv,
+            'use_contrast_enhancement': use_contrast,
+            'use_bilateral_filter': use_bilateral,
+            'use_clahe': use_clahe,
+            'use_adaptive_threshold': use_threshold,
+            'use_morphology': use_morphology,
+            'use_denoising': use_denoising,
+            'contrast_alpha': contrast_alpha,
+            'contrast_beta': contrast_beta,
+            'bilateral_d': bilateral_d,
+            'bilateral_sigma_color': bilateral_sigma,
+            'bilateral_sigma_space': bilateral_sigma,
+            'clahe_clip_limit': clahe_clip,
+            'clahe_grid_size': clahe_grid,
+            'threshold_block_size': threshold_block,
+            'threshold_c': threshold_c,
+            'morph_kernel_size': morph_size,
+            'morph_iterations': morph_iter,
+            'denoise_strength': denoise_strength,
+            'denoise_template_window': denoise_template,
+            'denoise_search_window': denoise_search
+        }
+        
+        # Save stitch mode and create processor
+        st.session_state.stitch_mode = stitch_mode
+        processor = ImageProcessor()
+        
+        if stitch_mode == "individual":
+            # Process individual regions
+            processed_regions = []
+            for img in region_images:
+                if optimize_for_ocr:
+                    processed_img = processor.optimize_for_ocr(
+                        img,
+                        preserve_dpi=True,
+                        **st.session_state.ocr_settings
+                    )
+                else:
+                    processed_img = img
+                processed_regions.append(processed_img)
+            st.session_state.processed_regions = processed_regions
+            st.session_state.stitched_image = None
+        else:
+            # Create and process stitched image
+            if stitch_mode == "vertical":
+                stitched = stitch_regions_vertically(images=region_images)
+            elif stitch_mode == "horizontal":
+                stitched = stitch_regions_horizontally(images=region_images)
+            else:  # grid
+                stitched = stitch_regions_grid(images=region_images, max_cols=max_cols)
+            
+            if stitched and optimize_for_ocr:
+                stitched = processor.optimize_for_ocr(
+                    stitched,
+                    preserve_dpi=True,
+                    **st.session_state.ocr_settings
+                )
+            st.session_state.stitched_image = stitched
+            st.session_state.processed_regions = None
+            
+        st.session_state.step = 4
+
     # Add CSS for layout
     st.markdown("""
         <style>
@@ -661,7 +753,9 @@ def main():
                 stitch_mode = st.selectbox(
                     "Select Stitch Mode",
                     ["individual", "vertical", "horizontal", "grid"],
-                    index=0
+                    index=0,
+                    key="stitch_mode_select",
+                    on_change=lambda: setattr(st.session_state, 'stitch_mode', st.session_state.stitch_mode_select)
                 )
                 
                 # Grid options if grid mode selected
@@ -678,111 +772,36 @@ def main():
                 with button_cols[0]:
                     save_button = st.button("Save Processed Regions", type="primary")
                 with button_cols[1]:
-                    start_ocr_button = st.button("Start OCR", type="primary")
-                
-                # Save current optimization settings to session state
-                if optimize_for_ocr:
-                    st.session_state.ocr_settings = {
-                        'use_yuv': use_yuv,
-                        'use_contrast_enhancement': use_contrast,
-                        'use_bilateral_filter': use_bilateral,
-                        'use_clahe': use_clahe,
-                        'use_adaptive_threshold': use_threshold,
-                        'use_morphology': use_morphology,
-                        'use_denoising': use_denoising,
-                        'contrast_alpha': contrast_alpha,
-                        'contrast_beta': contrast_beta,
-                        'bilateral_d': bilateral_d,
-                        'bilateral_sigma_color': bilateral_sigma,
-                        'bilateral_sigma_space': bilateral_sigma,
-                        'clahe_clip_limit': clahe_clip,
-                        'clahe_grid_size': clahe_grid,
-                        'threshold_block_size': threshold_block,
-                        'threshold_c': threshold_c,
-                        'morph_kernel_size': morph_size,
-                        'morph_iterations': morph_iter,
-                        'denoise_strength': denoise_strength,
-                        'denoise_template_window': denoise_template,
-                        'denoise_search_window': denoise_search
-                    }
-
-                # Show OCR optimization preview in a more compact way
-                st.markdown("### OCR Preview")
-                preview_cols = st.columns(2)
-                with preview_cols[0]:
-                    st.image(region_images[0], use_column_width=True)
-                
-                # Create optimized version
-                processor = ImageProcessor()
-                optimized = processor.optimize_for_ocr(
-                    region_images[0],
-                    preserve_dpi=True,
-                    use_yuv=use_yuv,
-                    use_contrast_enhancement=use_contrast,
-                    use_bilateral_filter=use_bilateral,
-                    use_clahe=use_clahe,
-                    use_adaptive_threshold=use_threshold,
-                    use_morphology=use_morphology,
-                    use_denoising=use_denoising,
-                    contrast_alpha=contrast_alpha,
-                    contrast_beta=contrast_beta,
-                    bilateral_d=bilateral_d,
-                    bilateral_sigma_color=bilateral_sigma,
-                    bilateral_sigma_space=bilateral_sigma,
-                    clahe_clip_limit=clahe_clip,
-                    clahe_grid_size=clahe_grid,
-                    threshold_block_size=threshold_block,
-                    threshold_c=threshold_c,
-                    morph_kernel_size=morph_size,
-                    morph_iterations=morph_iter,
-                    denoise_strength=denoise_strength,
-                    denoise_template_window=denoise_template,
-                    denoise_search_window=denoise_search
-                )
-                with preview_cols[1]:
-                    st.image(optimized, use_column_width=True)
-
-                # Handle Start OCR button
-                if start_ocr_button:
-                    # Save the current optimization settings to session state for OCR step
-                    if not hasattr(st.session_state, 'ocr_settings'):
-                        st.session_state.ocr_settings = {}
-                    
-                    # Save the processed regions for OCR step
-                    processed_regions = []
-                    for img in region_images:
-                        if optimize_for_ocr:
-                            processed_img = processor.optimize_for_ocr(
-                                img,
-                                preserve_dpi=True,
-                                **st.session_state.ocr_settings
-                            )
-                        else:
-                            processed_img = img
-                        processed_regions.append(processed_img)
-                    
-                    # Store processed regions in session state
-                    st.session_state.processed_regions = processed_regions
-                    
-                    # Move to next step (OCR step)
-                    st.session_state.step = 4
-                    st.rerun()
+                    st.button("Start OCR", type="primary", on_click=handle_start_ocr)
 
         elif st.session_state.step == 4:
-            if not hasattr(st.session_state, 'processed_regions'):
-                st.warning("No processed regions found. Please go back to step 3 and process regions first.")
+            if not hasattr(st.session_state, 'processed_regions') and not hasattr(st.session_state, 'stitched_image'):
+                st.warning("No processed images found. Please go back to step 3 and process regions first.")
                 return
             
+            # Validate processed regions or stitched image
+            if st.session_state.stitch_mode == "individual":
+                if not st.session_state.processed_regions:
+                    st.warning("No processed regions found. Please go back to step 3 and process your regions.")
+                    return
+            else:
+                if not st.session_state.stitched_image:
+                    st.warning("No stitched image found. Please go back to step 3 and process your regions.")
+                    return
+            
             st.header("OCR Text")
+            
+            # Show current mode
+            st.info(f"Processing Mode: {'Individual Regions' if st.session_state.stitch_mode == 'individual' else 'Stitched Output'}")
             
             # OCR Method Selection
             ocr_method = st.selectbox(
                 "Select OCR Method",
-                ["Tesseract (Default)", "EasyOCR", "PaddleOCR"],
+                ["Tesseract (Default)", "Florence-2", "Florence-2 with Region", "Qwen2-VL", "Qwen2-VL with Region"],
                 index=0
             )
             
-            # Language Selection
+            # Language and Settings based on method
             if ocr_method == "Tesseract (Default)":
                 languages = ["eng", "eng+fra", "eng+deu", "eng+spa"]
                 lang = st.selectbox("Select Language", languages, index=0)
@@ -796,23 +815,44 @@ def main():
                     whitelist = st.text_input("Character Whitelist", 
                                             "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789")
             
-            elif ocr_method == "EasyOCR":
-                languages = ["en", "fr", "de", "es"]
-                lang = st.selectbox("Select Language", languages, index=0)
-                
-                # EasyOCR-specific settings
+            elif ocr_method.startswith("Florence-2"):
+                with st.expander("Model Information"):
+                    st.markdown("""
+                    Florence-2 is a powerful vision-language model optimized for OCR tasks.
+                    - Supports both handwritten and printed text
+                    - High accuracy text recognition
+                    - Region detection capability
+                    - English language support
+                    """)
+                    
                 with st.expander("Advanced Settings"):
-                    paragraph = st.checkbox("Paragraph Detection", value=True)
-                    batch_size = st.slider("Batch Size", 1, 10, 1)
+                    max_tokens = st.slider("Maximum Output Tokens", 128, 2048, 1024,
+                                         help="Maximum number of tokens in the output")
             
-            else:  # PaddleOCR
-                languages = ["en", "fr", "german", "korean"]
-                lang = st.selectbox("Select Language", languages, index=0)
-                
-                # PaddleOCR-specific settings
+            else:  # Qwen methods
+                with st.expander("Model Information"):
+                    st.markdown("""
+                    Qwen2.5-VL is a powerful vision-language model optimized for OCR tasks.
+                    - Supports both handwritten and printed text
+                    - Multilingual support
+                    - High accuracy text recognition
+                    - Region detection capability with precise coordinates
+                    """)
+                    
                 with st.expander("Advanced Settings"):
-                    use_angle_cls = st.checkbox("Use Angle Classifier", value=True)
-                    rec_batch_num = st.slider("Recognition Batch Size", 1, 10, 1)
+                    max_tokens = st.slider("Maximum Output Tokens", 128, 2048, 512,
+                                         help="Maximum number of tokens in the output")
+                    temperature = st.slider("Temperature", 0.0, 1.0, 0.0,
+                                          help="Higher values make the output more random")
+                    
+                    # Additional Qwen-specific settings
+                    st.markdown("##### Model Settings")
+                    use_flash_attention = st.checkbox("Use Flash Attention", value=True,
+                                                    help="Enable for better performance on supported GPUs")
+                    min_pixels = st.slider("Minimum Pixels", 128, 512, 256,
+                                         help="Minimum size for image processing (lower = faster)")
+                    max_pixels = st.slider("Maximum Pixels", 512, 2048, 1280,
+                                         help="Maximum size for image processing (lower = less memory)")
             
             # OCR Progress
             progress_placeholder = st.empty()
@@ -820,71 +860,170 @@ def main():
             
             # Start OCR button
             if st.button("Start OCR", type="primary"):
-                progress_bar = progress_placeholder.progress(0)
-                results = []
-                
-                for i, img in enumerate(st.session_state.processed_regions):
-                    # Update progress
-                    progress = (i + 1) / len(st.session_state.processed_regions)
-                    progress_bar.progress(progress, f"Processing region {i+1}/{len(st.session_state.processed_regions)}")
+                try:
+                    # Initialize progress bar
+                    progress_bar = progress_placeholder.progress(0, text="Starting OCR...")
                     
-                    # Perform OCR based on selected method
+                    # Map OCR method to processor method
+                    method_map = {
+                        "Tesseract (Default)": "tesseract",
+                        "Florence-2": "florence",
+                        "Florence-2 with Region": "florence_with_region",
+                        "Qwen2-VL": "qwen",
+                        "Qwen2-VL with Region": "qwen_with_region"
+                    }
+                    
+                    # Prepare kwargs based on method
+                    kwargs = {}
                     if ocr_method == "Tesseract (Default)":
-                        custom_config = f'--oem {oem_mode} --psm {psm_mode} -c tessedit_char_whitelist="{whitelist}"'
-                        text = pytesseract.image_to_string(img, lang=lang, config=custom_config)
+                        kwargs = {
+                            'lang': lang,
+                            'psm_mode': psm_mode,
+                            'oem_mode': oem_mode,
+                            'whitelist': whitelist
+                        }
+                    elif ocr_method.startswith("Florence-2"):
+                        kwargs = {
+                            'max_new_tokens': max_tokens,
+                            'with_region': "with Region" in ocr_method
+                        }
+                    else:  # Qwen methods
+                        kwargs = {
+                            'max_new_tokens': max_tokens,
+                            'temperature': temperature,
+                            'with_region': "with Region" in ocr_method,
+                            'use_flash_attention': use_flash_attention,
+                            'min_pixels': min_pixels * 28 * 28,
+                            'max_pixels': max_pixels * 28 * 28
+                        }
+                    
+                    results = []
+                    
+                    # Process images based on mode
+                    if st.session_state.stitch_mode == "individual":
+                        if not st.session_state.processed_regions:
+                            raise ValueError("No processed regions available")
+                            
+                        total_images = len(st.session_state.processed_regions)
+                        for i, img in enumerate(st.session_state.processed_regions):
+                            if img is None:
+                                st.warning(f"Skipping region {i+1} - image is None")
+                                continue
+                                
+                            # Update progress
+                            progress = (i + 1) / total_images
+                            progress_bar.progress(progress, text=f"Processing region {i+1} of {total_images}...")
+                            
+                            try:
+                                # Ensure image is in RGB mode
+                                if img.mode != 'RGB':
+                                    img = img.convert('RGB')
+                                
+                                # Process single image
+                                result = st.session_state.ocr_processor.process_batch(
+                                    [img],
+                                    method=method_map[ocr_method],
+                                    **kwargs
+                                )[0]
+                                results.append(result)
+                            except Exception as e:
+                                st.warning(f"Error processing region {i+1}: {str(e)}")
+                                results.append(None)
+                                continue
                     else:
-                        # Placeholder for other OCR methods
-                        text = f"OCR result for region {i+1} using {ocr_method}"
-                    
-                    results.append({
-                        'region': i + 1,
-                        'text': text.strip(),
-                        'method': ocr_method,
-                        'lang': lang
-                    })
-                
-                # Display results
-                with results_placeholder.container():
-                    st.markdown("### OCR Results")
-                    
-                    # Display side by side: Image and OCR text
-                    for i, result in enumerate(results):
-                        st.markdown(f"#### Region {i+1}")
-                        cols = st.columns(2)
+                        if st.session_state.stitched_image is None:
+                            raise ValueError("No stitched image available")
+                            
+                        # Update progress for single stitched image
+                        progress_bar.progress(0.5, text="Processing stitched image...")
                         
-                        # Show image
-                        with cols[0]:
-                            st.image(st.session_state.processed_regions[i], use_column_width=True)
+                        # Ensure stitched image is in RGB mode
+                        img = st.session_state.stitched_image
+                        if img.mode != 'RGB':
+                            img = img.convert('RGB')
                         
-                        # Show OCR text
-                        with cols[1]:
-                            st.text_area("Extracted Text", result['text'], height=200)
+                        # Process stitched image as a single region
+                        result = st.session_state.ocr_processor.process_batch(
+                            [img],
+                            method=method_map[ocr_method],
+                            **kwargs
+                        )[0]
+                        results = [result]
                     
-                    # Export options
-                    export_format = st.selectbox("Export Format", ["TXT", "JSON", "CSV"])
-                    if st.button("Export Results"):
-                        if export_format == "TXT":
-                            txt_content = "\n\n".join([f"Region {r['region']}:\n{r['text']}" for r in results])
-                            st.download_button(
-                                "Download TXT",
-                                txt_content,
-                                file_name="ocr_results.txt"
-                            )
-                        elif export_format == "JSON":
-                            json_content = json.dumps(results, indent=2)
-                            st.download_button(
-                                "Download JSON",
-                                json_content,
-                                file_name="ocr_results.json"
-                            )
-                        else:  # CSV
-                            df = pd.DataFrame(results)
-                            csv_content = df.to_csv(index=False)
-                            st.download_button(
-                                "Download CSV",
-                                csv_content,
-                                file_name="ocr_results.csv"
-                            )
+                    # Complete progress
+                    progress_bar.progress(1.0, text="OCR completed!")
+                    
+                    # Display results
+                    with results_placeholder.container():
+                        st.markdown("### OCR Results")
+                        
+                        if not results:
+                            st.warning("No results were generated. Please try again or check your input images.")
+                            return
+                        
+                        # Display results based on mode
+                        for i, result in enumerate(results):
+                            if not result:
+                                st.warning(f"No result for region {i+1}")
+                                continue
+                            
+                            title = f"Region {i+1}" if st.session_state.stitch_mode == "individual" else "Stitched Output"
+                            st.markdown(f"#### {title}")
+                            
+                            # Get the corresponding image safely
+                            try:
+                                if st.session_state.stitch_mode == "individual":
+                                    img = st.session_state.processed_regions[i] if i < len(st.session_state.processed_regions) else None
+                                else:
+                                    img = st.session_state.stitched_image
+                                
+                                if img is None:
+                                    st.warning(f"Image not found for {title}")
+                                    continue
+                                
+                                img_height = img.height
+                                text_height = int(img_height * 0.9)
+                                
+                                # Create columns for image and text
+                                img_col, text_col = st.columns(2)
+                                
+                                with img_col:
+                                    st.image(img)
+                                    if 'regions' in result:  # Qwen format
+                                        st.markdown("Detected Regions:")
+                                        for j, region in enumerate(result['regions']):
+                                            st.write(f"- Region {j+1}: {region['text']}")
+                                            st.write(f"  Box: {region['box']}")
+                                    elif 'boxes' in result:  # Florence format
+                                        st.markdown("Detected Regions:")
+                                        boxes = result['boxes']
+                                        labels = result.get('labels', [])
+                                        for j, (box, label) in enumerate(zip(boxes, labels)):
+                                            st.write(f"- Region {j+1}: {label}")
+                                            st.write(f"  Box: {box}")
+                                
+                                with text_col:
+                                    st.text_area("Extracted Text", 
+                                               result.get('text', ''),
+                                               height=text_height,
+                                               key=f"text_area_{i}")
+                                    
+                                    # Show raw output for debugging
+                                    if 'raw_output' in result:
+                                        with st.expander("Raw Model Output"):
+                                            st.code(str(result['raw_output']))
+                                
+                            except Exception as e:
+                                st.error(f"Error displaying result for {title}: {str(e)}")
+                                continue
+                            
+                            st.markdown("<br>", unsafe_allow_html=True)
+                            
+                except Exception as e:
+                    import traceback
+                    st.error(f"An error occurred: {str(e)}")
+                    st.error("Traceback:")
+                    st.code(traceback.format_exc())
 
     # Right Column: Preview and Results
     with preview_col:
@@ -894,16 +1033,19 @@ def main():
                 st.image(st.session_state.current_image, caption="Preview", use_column_width=True)
         
         elif st.session_state.step == 2:
+            st.header("Region Previews")
             ui_manager.render_region_previews()
             
         elif st.session_state.step == 3:
-            st.markdown("### Final Output Preview")
+            st.header("Final Output")
+            
+            # Create processor instance
+            processor = ImageProcessor()
             
             # Show preview of all regions
-            if stitch_mode == "individual":
+            if st.session_state.stitch_mode == "individual":
                 for i, img in enumerate(region_images):
                     if optimize_for_ocr:
-                        processor = ImageProcessor()
                         img = processor.optimize_for_ocr(
                             img,
                             preserve_dpi=True,
@@ -912,9 +1054,9 @@ def main():
                     st.image(img)  # Remove use_column_width=True for original size
             else:
                 # Preview stitched result
-                if stitch_mode == "vertical":
+                if st.session_state.stitch_mode == "vertical":
                     preview = stitch_regions_vertically(images=region_images)
-                elif stitch_mode == "horizontal":
+                elif st.session_state.stitch_mode == "horizontal":
                     preview = stitch_regions_horizontally(images=region_images)
                 else:  # grid
                     preview = stitch_regions_grid(images=region_images, max_cols=max_cols)
@@ -935,7 +1077,6 @@ def main():
                 output_dir.mkdir(exist_ok=True)
                 
                 # Save individual regions
-                processor = ImageProcessor()
                 for i, img in enumerate(region_images):
                     if optimize_for_ocr:
                         img = processor.optimize_for_ocr(
@@ -947,10 +1088,10 @@ def main():
                     processor.save_high_quality(img, output_path)
                 
                 # Save stitched result if not in individual mode
-                if stitch_mode != "individual":
-                    if stitch_mode == "vertical":
+                if st.session_state.stitch_mode != "individual":
+                    if st.session_state.stitch_mode == "vertical":
                         preview = stitch_regions_vertically(images=region_images)
-                    elif stitch_mode == "horizontal":
+                    elif st.session_state.stitch_mode == "horizontal":
                         preview = stitch_regions_horizontally(images=region_images)
                     else:  # grid
                         preview = stitch_regions_grid(images=region_images, max_cols=max_cols)
@@ -962,7 +1103,7 @@ def main():
                             **st.session_state.ocr_settings
                         )
                     
-                    output_path = output_dir / f"stitched_{stitch_mode}.png"
+                    output_path = output_dir / f"stitched_{st.session_state.stitch_mode}.png"
                     processor.save_high_quality(preview, output_path)
                 
                 st.success(f"Saved processed regions to {output_dir}")
@@ -976,8 +1117,8 @@ def main():
                         zip_file.write(region_path, region_path.name)
                     
                     # Add stitched result if not in individual mode
-                    if stitch_mode != "individual":
-                        stitched_path = output_dir / f"stitched_{stitch_mode}.png"
+                    if st.session_state.stitch_mode != "individual":
+                        stitched_path = output_dir / f"stitched_{st.session_state.stitch_mode}.png"
                         zip_file.write(stitched_path, stitched_path.name)
                 
                 # Create download button
