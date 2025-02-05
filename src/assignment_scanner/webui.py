@@ -20,7 +20,10 @@ import zipfile
 from io import BytesIO
 import base64
 
-from .scanner import AssignmentScanner
+from src.assignment_scanner.scanner import AssignmentScanner
+from src.assignment_scanner.state_manager import StateManager
+from src.assignment_scanner.region_processor import RegionProcessor
+from src.assignment_scanner.ui_manager import UIManager
 
 
 def create_stacked_preview(pdf_path: str, dpi: int = 300, alpha: float = 0.3) -> Image.Image:
@@ -313,51 +316,139 @@ def add_border(img: Image.Image, border_width: int = 2, border_color: str = 'red
     return img
 
 
+def create_stacked_preview_from_pages(pages: List[Image.Image], alpha: float = 0.3) -> Optional[Image.Image]:
+    """
+    Create a preview image with all pages stacked with transparency using cached pages.
+    
+    Args:
+        pages: List of PIL Image objects
+        alpha: Transparency level for each page (0.0 to 1.0)
+        
+    Returns:
+        PIL Image with all pages stacked
+    """
+    if not pages:
+        return None
+        
+    # Use first page as base
+    base_image = pages[0].copy()
+    
+    # Convert to RGBA to support transparency
+    base_image = base_image.convert('RGBA')
+    
+    # Stack subsequent pages with transparency
+    for page in pages[1:]:
+        # Convert page to RGBA
+        overlay = page.convert('RGBA')
+        
+        # Ensure same size as base image
+        if overlay.size != base_image.size:
+            overlay = overlay.resize(base_image.size, Image.Resampling.LANCZOS)
+        
+        # Create transparent version of the overlay
+        transparent = Image.new('RGBA', base_image.size, (0, 0, 0, 0))
+        transparent.paste(overlay, (0, 0))
+        
+        # Adjust alpha for this layer
+        data = transparent.getdata()
+        newData = [(r, g, b, int(a * alpha)) for r, g, b, a in data]
+        transparent.putdata(newData)
+        
+        # Composite the images
+        base_image = Image.alpha_composite(base_image, transparent)
+    
+    return base_image
+
+
 def main():
     st.set_page_config(layout="wide")
     
-    # Initialize session state variables
-    if 'step' not in st.session_state:
-        st.session_state.step = 1
-    if 'regions_map' not in st.session_state:
-        st.session_state.regions_map = {}
-    if 'current_image' not in st.session_state:
-        st.session_state.current_image = None
-    if 'current_file' not in st.session_state:
-        st.session_state.current_file = None
-    if 'canvas_key' not in st.session_state:
-        st.session_state.canvas_key = 0
-    if 'uploaded_files' not in st.session_state:
-        st.session_state.uploaded_files = []
-    if 'processed_files' not in st.session_state:
-        st.session_state.processed_files = set()
-    if 'processing_complete' not in st.session_state:
-        st.session_state.processing_complete = False
-    if 'stacked_previews' not in st.session_state:
-        st.session_state.stacked_previews = {}
-    if 'preview_generated' not in st.session_state:
-        st.session_state.preview_generated = False
-    if 'current_result' not in st.session_state:
-        st.session_state.current_result = None
-    if 'preview_file_index' not in st.session_state:
-        st.session_state.preview_file_index = 0
-    if 'first_page_previews' not in st.session_state:
-        st.session_state.first_page_previews = {}
-    if 'view_mode' not in st.session_state:
-        st.session_state.view_mode = "Separate"
-    if 'cropped_regions_cache' not in st.session_state:
-        st.session_state.cropped_regions_cache = {}
+    # Add CSS for layout
+    st.markdown("""
+        <style>
+            /* Reset main container */
+            .main .block-container {
+                padding: 2rem 1rem 1rem;
+                max-width: 100%;
+            }
+            
+            /* Reset sidebar */
+            section[data-testid="stSidebar"] {
+                width: 0px;
+            }
+            
+            /* Fix column layout */
+            .stMarkdown {
+                min-height: auto;
+            }
+            
+            /* Fix left and middle columns */
+            [data-testid="column"]:nth-child(1),
+            [data-testid="column"]:nth-child(2) {
+                position: sticky !important;
+                top: 0;
+                background: white;
+                z-index: 999;
+            }
+            
+            /* Make right column scrollable */
+            [data-testid="column"]:nth-child(3) {
+                max-height: calc(100vh - 3rem);
+                overflow-y: auto;
+                overflow-x: hidden;
+            }
+            
+            /* Target region preview elements in right column */
+            [data-testid="column"]:nth-child(3) .e1f1d6gn2 {
+                gap: 0.1rem !important;
+                margin: 0 !important;
+                padding: 0 !important;
+            }
+            
+            
+            /* Basic column padding */
+            [data-testid="column"] {
+                padding: 0 0.5rem !important;
+            }
+            
+            /* Hide default scrollbar */
+            [data-testid="column"]:nth-child(3)::-webkit-scrollbar {
+                display: none;
+            }
+            
+            /* Make dividers more compact */
+            hr {
+                margin: 0.1rem 0 !important;
+            }
+            
+            /* Reset headers */
+            h1, h2, h3 {
+                margin: 0 0 1rem 0 !important;
+                padding: 0 !important;
+            }
+            
+            /* Reset buttons */
+            .stButton > button {
+                margin: 0 0 0.5rem 0 !important;
+            }
+        </style>
+    """, unsafe_allow_html=True)
     
-    # Create three main columns for consistent layout
+    # Initialize managers
+    state_manager = StateManager()
+    region_processor = RegionProcessor(state_manager)
+    ui_manager = UIManager(state_manager, region_processor)
+    
+    # Create three main columns for layout
     step_col, control_col, preview_col = st.columns([0.2, 0.3, 0.5])
     
-    # Left Column: Steps and Navigation
+    # Left Column: Steps and Progress
     with step_col:
         st.title("Steps")
         step_names = {
-            1: "Upload Files",
+            1: "Upload File",
             2: "Draw Regions",
-            3: "Process Files"
+            3: "Process Regions"
         }
         
         for step_num, step_name in step_names.items():
@@ -370,671 +461,140 @@ def main():
                 if step_num == 2:  # Reset canvas when returning to drawing step
                     st.session_state.canvas_key += 1
         
-        # Show progress information
-        if st.session_state.step > 1 and st.session_state.uploaded_files:
-            st.write("### Progress")
-            total_files = len(st.session_state.uploaded_files)
-            processed_files = len(st.session_state.processed_files)
-            st.write(f"Files: {processed_files} / {total_files}")
+        # Show file details if a file is loaded
+        if st.session_state.current_file:
+            st.write("### File Details")
+            st.caption(os.path.basename(st.session_state.current_file))
             
-            if st.session_state.current_file:
-                st.write("Current file:")
-                st.write(os.path.basename(st.session_state.current_file))
+            # Show regions info
+            regions = state_manager.get_all_regions(st.session_state.current_file)
+            pages = state_manager.get_pdf_pages(st.session_state.current_file)
+            
+            if pages:
+                total_pages = len(pages)
+                pages_with_regions = len({r.page_idx for r in regions}) if regions else 0
+                
+                # Progress bar for pages with regions
+                st.progress(pages_with_regions / total_pages, 
+                          text=f"Pages with regions: {pages_with_regions}/{total_pages}")
+                
+                # Visual representation of pages with regions
+                if regions:
+                    pages_status = []
+                    for i in range(total_pages):
+                        has_regions = any(r.page_idx == i + 1 for r in regions)
+                        pages_status.append("✓" if has_regions else "·")
+                    
+                    # Display in rows of 10
+                    for i in range(0, total_pages, 10):
+                        st.text("".join(pages_status[i:i+10]))
+                    
+                    # Show total regions count with a metric
+                    st.metric("Total Regions", len(regions))
     
     # Middle Column: Controls
     with control_col:
         if st.session_state.step == 1:
-            st.header("Upload Files")
-            uploaded_files = st.file_uploader("Upload PDF files", type=['pdf'], accept_multiple_files=True)
+            st.header("Upload File")
+            uploaded_file = st.file_uploader("Upload PDF file", type=['pdf'])
             
-            if uploaded_files:
-                # File handling code remains the same...
-                current_filenames = {os.path.basename(f) for f in st.session_state.uploaded_files}
-                new_filenames = {f.name for f in uploaded_files}
+            if uploaded_file:
+                # Save file
+                os.makedirs("temp_uploads", exist_ok=True)
+                file_path = os.path.join("temp_uploads", uploaded_file.name)
+                with open(file_path, "wb") as f:
+                    f.write(uploaded_file.getvalue())
                 
-                if current_filenames != new_filenames:
-                    # Reset state code remains the same...
-                    st.session_state.uploaded_files = []
-                    st.session_state.regions_map = {}
-                    st.session_state.processed_files = set()
-                    st.session_state.processing_complete = False
-                    st.session_state.stacked_previews = {}
-                    st.session_state.preview_generated = False
-                    st.session_state.first_page_previews = {}
-                    
-                    # Save files code remains the same...
-                    os.makedirs("temp_uploads", exist_ok=True)
-                    for uploaded_file in uploaded_files:
-                        file_path = os.path.join("temp_uploads", uploaded_file.name)
-                        with open(file_path, "wb") as f:
-                            f.write(uploaded_file.getvalue())
-                        st.session_state.uploaded_files.append(file_path)
+                st.session_state.current_file = file_path
                 
-                st.write(f"Total files: {len(st.session_state.uploaded_files)}")
-                for file_path in st.session_state.uploaded_files:
-                    st.write(f"- {os.path.basename(file_path)}")
-                
+                # Preview settings
                 st.write("### Preview Settings")
                 alpha = st.slider("Page Transparency", 0.0, 1.0, 0.3, 0.1)
                 
-                st.write("### Actions")
-                col1, col2 = st.columns(2)
-                with col1:
-                    if st.button("Generate Stacked Previews", type="primary"):
-                        with st.spinner("Generating previews..."):
-                            progress = st.progress(0)
-                            for idx, file_path in enumerate(st.session_state.uploaded_files):
-                                stacked = create_stacked_preview(file_path, alpha=alpha)
-                                if stacked is not None:
-                                    if stacked.mode == 'RGBA':
-                                        white_bg = Image.new('RGB', stacked.size, 'white')
-                                        white_bg.paste(stacked, mask=stacked.split()[3])
-                                        stacked = white_bg
-                                    st.session_state.stacked_previews[file_path] = stacked
-                                progress.progress((idx + 1) / len(st.session_state.uploaded_files))
-                            st.session_state.preview_generated = True
-                            st.rerun()
-                
-                with col2:
-                    if st.button("Start Processing", type="primary"):
-                        st.session_state.step = 2
-                        st.session_state.current_file = st.session_state.uploaded_files[0]
-                        # Use first page preview if no stacked preview available
-                        if st.session_state.current_file not in st.session_state.stacked_previews:
-                            if st.session_state.current_file not in st.session_state.first_page_previews:
-                                preview = load_first_page(st.session_state.current_file, stack_preview=False)
-                                st.session_state.first_page_previews[st.session_state.current_file] = preview
-                            st.session_state.current_image = st.session_state.first_page_previews[st.session_state.current_file]
-                        else:
-                            st.session_state.current_image = st.session_state.stacked_previews[st.session_state.current_file]
-                        st.session_state.canvas_key += 1
-                        st.rerun()
-
-        elif st.session_state.step == 2:
-            st.header("Draw Regions")
-            if st.session_state.current_file:
-                # Add redraw state to session state if not exists
-                if 'redrawing' not in st.session_state:
-                    st.session_state.redrawing = False
-                    st.session_state.redraw_page = None
-                    st.session_state.redraw_region = None
-
-                if st.session_state.redrawing:
-                    # Show redraw interface in the middle column
-                    st.write("---")
-                    st.write(f"### Redrawing Region {st.session_state.redraw_region} on Page {st.session_state.redraw_page}")
-                    
-                    # Get the specific page image
-                    pages = convert_from_path(st.session_state.current_file)
-                    page_img = pages[st.session_state.redraw_page - 1].convert('RGB')
-                    
-                    # Calculate scaling for canvas
-                    DISPLAY_HEIGHT = 600
-                    scale_factor = DISPLAY_HEIGHT / page_img.height
-                    display_width = int(page_img.width * scale_factor)
-                    
-                    # Resize image for display
-                    display_image = page_img.resize(
-                        (display_width, DISPLAY_HEIGHT),
-                        Image.Resampling.LANCZOS
-                    )
-                    
-                    # Create columns for buttons
-                    btn_col1, btn_col2 = st.columns(2)
-                    with btn_col1:
-                        if st.button("Cancel Redraw"):
-                            st.session_state.redrawing = False
-                            st.rerun()
-                    
-                    # Drawing canvas for redraw
-                    canvas_result = st_canvas(
-                        fill_color="rgba(255, 165, 0, 0.3)",
-                        stroke_width=2,
-                        stroke_color="#e00",
-                        background_image=display_image,
-                        drawing_mode="rect",
-                        key=f"redraw_canvas_{st.session_state.canvas_key}",
-                        height=DISPLAY_HEIGHT,
-                        width=display_width,
-                        update_streamlit=True
-                    )
-                    
-                    # Handle redraw result
-                    if (canvas_result.json_data is not None and 
-                        canvas_result.json_data.get("objects")):
-                        regions = canvas_result.json_data["objects"]
-                        if regions:  # If a new region is drawn
-                            # Convert coordinates back to original scale
-                            new_region = regions[-1]  # Get the last drawn region
-                            original_coords = (
-                                max(0, int(new_region['left'] / scale_factor)),
-                                max(0, int(new_region['top'] / scale_factor)),
-                                min(page_img.width, int((new_region['left'] + new_region['width']) / scale_factor)),
-                                min(page_img.height, int((new_region['top'] + new_region['height']) / scale_factor))
-                            )
-                            
-                            # Update the region in the cache
-                            region_img = page_img.crop(original_coords)
-                            region_key = get_region_key(
-                                st.session_state.current_file,
-                                st.session_state.redraw_page,
-                                st.session_state.redraw_region
-                            )
-                            st.session_state.cropped_regions_cache[region_key] = region_img
-                            
-                            # Exit redraw mode
-                            st.session_state.redrawing = False
-                            st.rerun()
-                else:
-                    # Use appropriate preview based on what's available
-                    if st.session_state.current_file in st.session_state.stacked_previews:
-                        current_preview = st.session_state.stacked_previews[st.session_state.current_file]
-                        preview_type = "stacked"
+                # Generate preview
+                with st.spinner("Generating preview..."):
+                    # Cache PDF pages if not already cached
+                    cached_pages = state_manager.get_pdf_pages(file_path)
+                    if cached_pages is None:
+                        pages = convert_from_path(file_path)
+                        state_manager.cache_pdf_pages(file_path, pages)
                     else:
-                        if st.session_state.current_file not in st.session_state.first_page_previews:
-                            preview = load_first_page(st.session_state.current_file, stack_preview=False)
-                            st.session_state.first_page_previews[st.session_state.current_file] = preview
-                        current_preview = st.session_state.first_page_previews[st.session_state.current_file]
-                        preview_type = "first page"
+                        pages = cached_pages
                     
-                    st.write(f"Drawing on {preview_type} preview")
+                    # Set first page as current image if not set
+                    if not st.session_state.current_image:
+                        st.session_state.current_image = pages[0]
                     
-                    # Calculate scaling for canvas
-                    DISPLAY_HEIGHT = 600
-                    scale_factor = DISPLAY_HEIGHT / current_preview.height
-                    display_width = int(current_preview.width * scale_factor)
-                    
-                    # Canvas controls
-                    col1, col2, col3 = st.columns(3)
+                    col1, col2 = st.columns(2)
                     with col1:
-                        if st.button("Clear Regions"):
-                            if st.session_state.current_file in st.session_state.regions_map:
-                                del st.session_state.regions_map[st.session_state.current_file]
+                        if st.button("Generate Stacked Preview", type="primary"):
+                            preview = region_processor.create_stacked_preview(pages, alpha=alpha)
+                            if preview is not None:
+                                if preview.mode == 'RGBA':
+                                    white_bg = Image.new('RGB', preview.size, 'white')
+                                    white_bg.paste(preview, mask=preview.split()[3])
+                                    preview = white_bg
+                                st.session_state.current_image = preview
+                                st.session_state.canvas_key += 1
+                                st.rerun()
+                    
+                    with col2:
+                        if st.button("Continue to Drawing", type="primary"):
+                            st.session_state.step = 2
                             st.session_state.canvas_key += 1
                             st.rerun()
-                    
-                    with col3:
-                        if st.button("Preview Current", type="primary"):
-                            if st.session_state.current_file in st.session_state.regions_map:
-                                # Process and cache all regions first
-                                pages = convert_from_path(st.session_state.current_file)
-                                current_regions = st.session_state.regions_map[st.session_state.current_file]
-                                
-                                for i, page in enumerate(pages):
-                                    page_rgb = page.convert('RGB')
-                                    scale_x = page_rgb.width / current_preview.width
-                                    scale_y = page_rgb.height / current_preview.height
-                                    scaled_regions = [
-                                        (
-                                            int(region[0] * scale_x),
-                                            int(region[1] * scale_y),
-                                            int(region[2] * scale_x),
-                                            int(region[3] * scale_y)
-                                        )
-                                        for region in current_regions
-                                    ]
-                                    
-                                    # Cache each cropped region
-                                    for j, region in enumerate(scaled_regions):
-                                        region_img = page_rgb.crop(region)
-                                        region_key = get_region_key(st.session_state.current_file, i+1, j+1)
-                                        st.session_state.cropped_regions_cache[region_key] = region_img
-                                st.rerun()
-                    
-                    # Drawing canvas
-                    display_image = current_preview.resize(
-                        (display_width, DISPLAY_HEIGHT), 
-                        Image.Resampling.LANCZOS
-                    )
-                    
-                    # Handle editing mode
-                    if hasattr(st.session_state, 'editing_region'):
-                        st.write(f"Editing Region {st.session_state.editing_region + 1}")
-                        if st.button("Cancel Edit"):
-                            del st.session_state.editing_region
-                            del st.session_state.editing_page
-                            st.session_state.canvas_key += 1
-                            st.rerun()
-                    
-                    # Show existing regions if any
-                    existing_regions = st.session_state.regions_map.get(st.session_state.current_file, [])
-                    existing_objects = []
-                    if existing_regions:
-                        for i, region in enumerate(existing_regions):
-                            # If in editing mode, only show the region being edited
-                            if hasattr(st.session_state, 'editing_region') and i != st.session_state.editing_region:
-                                continue
-                                
-                            # Convert back to display coordinates
-                            display_region = {
-                                'type': 'rect',
-                                'left': region[0] * scale_factor,
-                                'top': region[1] * scale_factor,
-                                'width': (region[2] - region[0]) * scale_factor,
-                                'height': (region[3] - region[1]) * scale_factor,
-                                'fill': 'rgba(255, 165, 0, 0.3)',
-                                'stroke': '#e00',
-                                'strokeWidth': 2
-                            }
-                            existing_objects.append(display_region)
-                    
-                    # Track previous number of objects to detect new region completion
-                    prev_objects_key = f"prev_objects_{st.session_state.current_file}"
-                    if prev_objects_key not in st.session_state:
-                        st.session_state[prev_objects_key] = len(existing_objects)
-                    
-                    canvas_result = st_canvas(
-                        fill_color="rgba(255, 165, 0, 0.3)",
-                        stroke_width=2,
-                        stroke_color="#e00",
-                        background_image=display_image,
-                        drawing_mode="rect",
-                        initial_drawing={"version": "4.4.0", "objects": existing_objects} if existing_objects else None,
-                        key=f"canvas_{st.session_state.canvas_key}",
-                        height=DISPLAY_HEIGHT,
-                        width=display_width,
-                        update_streamlit=True
-                    )
-                    
-                    # Handle canvas drawing results
-                    if (canvas_result.json_data is not None and 
-                        canvas_result.json_data.get("objects")):
-                        regions = canvas_result.json_data["objects"]
-                        current_regions = [
-                            (
-                                max(0, int(r['left'] / scale_factor)),
-                                max(0, int(r['top'] / scale_factor)),
-                                min(current_preview.width, int((r['left'] + r['width']) / scale_factor)),
-                                min(current_preview.height, int((r['top'] + r['height']) / scale_factor))
-                            )
-                            for r in regions
-                        ]
-                        
-                        if hasattr(st.session_state, 'editing_region'):
-                            # Update only the edited region
-                            existing_regions = st.session_state.regions_map.get(st.session_state.current_file, [])
-                            if current_regions:  # If there's a new region drawn
-                                existing_regions[st.session_state.editing_region] = current_regions[0]
-                                st.session_state.regions_map[st.session_state.current_file] = existing_regions
-                                # Clear editing mode
-                                del st.session_state.editing_region
-                                del st.session_state.editing_page
-                                st.session_state.canvas_key += 1
-                                st.rerun()
-                        else:
-                            # Normal mode - handle all regions
-                            st.session_state.regions_map[st.session_state.current_file] = current_regions
-                            st.write(f"Saved {len(current_regions)} regions for {os.path.basename(st.session_state.current_file)}")
-                    
-                    # Navigation buttons with file info
-                    remaining_files = [f for f in st.session_state.uploaded_files 
-                                     if f not in st.session_state.processed_files]
-                    
-                    # Show navigation controls
-                    nav_col1, nav_col2, nav_col3 = st.columns([1, 2, 1])
-                    
-                    with nav_col1:
-                        # Get current file index
-                        current_idx = st.session_state.uploaded_files.index(st.session_state.current_file)
-                        if current_idx > 0:
-                            if st.button("◀ Previous"):
-                                prev_file = st.session_state.uploaded_files[current_idx - 1]
-                                st.session_state.current_file = prev_file
-                                if prev_file in st.session_state.stacked_previews:
-                                    st.session_state.current_image = st.session_state.stacked_previews[prev_file]
-                                else:
-                                    if prev_file not in st.session_state.first_page_previews:
-                                        preview = load_first_page(prev_file, stack_preview=False)
-                                        st.session_state.first_page_previews[prev_file] = preview
-                                    st.session_state.current_image = st.session_state.first_page_previews[prev_file]
-                                st.session_state.canvas_key += 1
-                                st.rerun()
-                    
-                    with nav_col2:
-                        st.write(f"File {current_idx + 1} of {len(st.session_state.uploaded_files)}")
-                        st.write(os.path.basename(st.session_state.current_file))
-                        if st.session_state.current_file in st.session_state.regions_map:
-                            st.write(f"Regions: {len(st.session_state.regions_map[st.session_state.current_file])}")
-                    
-                    with nav_col3:
-                        if remaining_files:
-                            if st.button("Next ▶", type="primary"):
-                                next_file = remaining_files[0]
-                                st.session_state.current_file = next_file
-                                if next_file in st.session_state.stacked_previews:
-                                    st.session_state.current_image = st.session_state.stacked_previews[next_file]
-                                else:
-                                    if next_file not in st.session_state.first_page_previews:
-                                        preview = load_first_page(next_file, stack_preview=False)
-                                        st.session_state.first_page_previews[next_file] = preview
-                                    st.session_state.current_image = st.session_state.first_page_previews[next_file]
-                                st.session_state.canvas_key += 1
-                                st.rerun()
-    
-    # Right Column: Previews and Results
-    with preview_col:
-        if st.session_state.step == 1 and st.session_state.uploaded_files:
-            st.header("Previews")
-            
-            # File navigation controls
-            col1, col2, col3 = st.columns([1, 3, 1])
-            with col1:
-                if st.button("◀", disabled=st.session_state.preview_file_index == 0):
-                    st.session_state.preview_file_index = max(0, st.session_state.preview_file_index - 1)
-                    st.rerun()
-            
-            with col2:
-                current_file = st.session_state.uploaded_files[st.session_state.preview_file_index]
-                st.write(f"File {st.session_state.preview_file_index + 1} of {len(st.session_state.uploaded_files)}")
-                st.write(os.path.basename(current_file))
-            
-            with col3:
-                if st.button("▶", disabled=st.session_state.preview_file_index >= len(st.session_state.uploaded_files) - 1):
-                    st.session_state.preview_file_index = min(len(st.session_state.uploaded_files) - 1, 
-                                                            st.session_state.preview_file_index + 1)
-                    st.rerun()
-            
-            # Show preview based on whether stacked preview is available
-            current_file = st.session_state.uploaded_files[st.session_state.preview_file_index]
-            
-            if current_file in st.session_state.stacked_previews:
-                # Show stacked preview
-                preview_image = st.session_state.stacked_previews[current_file]
-                st.image(preview_image, caption="Stacked Preview", use_column_width=True)
-            else:
-                # Show or generate first page preview
-                if current_file not in st.session_state.first_page_previews:
-                    try:
-                        preview = load_first_page(current_file, stack_preview=False)
-                        st.session_state.first_page_previews[current_file] = preview
-                    except Exception as e:
-                        st.error(f"Error loading preview: {str(e)}")
-                        preview = None
-                else:
-                    preview = st.session_state.first_page_previews[current_file]
-                
-                if preview is not None:
-                    st.image(preview, caption="First Page Preview", use_column_width=True)
         
         elif st.session_state.step == 2:
-            st.header("Results")
-            if st.session_state.current_file in st.session_state.regions_map:
-                current_regions = st.session_state.regions_map[st.session_state.current_file]
-                st.write(f"Regions: {len(current_regions)}")
-                
-                # Add tabs for different views
-                tab1, tab2 = st.tabs(["Region Preview", "All Cropped Regions"])
-                
-                with tab1:
-                    # Get the current preview image
-                    if st.session_state.current_file in st.session_state.stacked_previews:
-                        current_preview = st.session_state.stacked_previews[st.session_state.current_file]
-                    else:
-                        if st.session_state.current_file not in st.session_state.first_page_previews:
-                            preview = load_first_page(st.session_state.current_file, stack_preview=False)
-                            st.session_state.first_page_previews[st.session_state.current_file] = preview
-                        current_preview = st.session_state.first_page_previews[st.session_state.current_file]
-                    
-                    # Show regions
-                    if current_regions:
-                        for i, region in enumerate(current_regions):
-                            region_img = current_preview.crop(region)
-                            st.image(region_img, caption=f"Region {i+1}", use_column_width=True)
-                
-                with tab2:
-                    st.write("### Cropped Regions")
-                    
-                    if st.session_state.current_file in st.session_state.regions_map:
-                        current_regions = st.session_state.regions_map[st.session_state.current_file]
-                        num_pages = len(convert_from_path(st.session_state.current_file))
+            st.header("Draw Regions")
+            if st.session_state.current_file and st.session_state.current_image:
+                if st.session_state.redrawing:
+                    # Get the specific page image from cache
+                    pages = state_manager.get_pdf_pages(st.session_state.current_file)
+                    if pages:
+                        page_img = pages[st.session_state.redraw_page - 1].convert('RGB')
+                        canvas_result, scale_factor = ui_manager.render_redraw_interface(page_img)
                         
-                        # Create a list of all regions from all pages
-                        all_regions = []
-                        for page_num in range(num_pages):
-                            for region_num in range(len(current_regions)):
-                                region_key = get_region_key(st.session_state.current_file, page_num+1, region_num+1)
-                                if region_key in st.session_state.cropped_regions_cache:
-                                    all_regions.append((
-                                        page_num + 1,
-                                        region_num + 1,
-                                        st.session_state.cropped_regions_cache[region_key]
-                                    ))
-                        
-                        # Initialize excluded regions if not exists
-                        if 'excluded_regions' not in st.session_state:
-                            st.session_state.excluded_regions = set()
-                        if 'temp_selections' not in st.session_state:
-                            st.session_state.temp_selections = {}
-                        
-                        # Create table data
-                        table_data = []
-                        for page_num, region_num, img in all_regions:
-                            region_key = f"{page_num}_{region_num}"
-                            if region_key not in st.session_state.temp_selections:
-                                st.session_state.temp_selections[region_key] = region_key not in st.session_state.excluded_regions
-                                
-                            # Add red border to the image
-                            bordered_img = add_border(img)
-                            
-                            # Create table row
-                            table_data.append({
-                                "Preview": bordered_img,
-                                "Page": page_num,
-                                "Region": region_num,
-                                "Edit": region_key,  # We'll use this to create edit buttons
-                                "Select": region_key  # We'll use this for checkboxes
-                            })
-                        
-                        # Convert to DataFrame for better display
-                        df = pd.DataFrame(table_data)
-                        
-                        # Display each row with proper formatting
-                        for _, row in df.iterrows():
-                            cols = st.columns([0.7, 0.06, 0.06, 0.08, 0.1])
-                            
-                            with cols[0]:
-                                st.image(row["Preview"], use_column_width=True)
-                            with cols[1]:
-                                st.write(str(row["Page"]))
-                            with cols[2]:
-                                st.write(str(row["Region"]))
-                            with cols[3]:
-                                if st.button("↺", key=f"edit_btn_{row['Edit']}", help="Redraw region"):
-                                    st.session_state.redrawing = True
-                                    st.session_state.redraw_page = row["Page"]
-                                    st.session_state.redraw_region = row["Region"]
-                                    st.session_state.canvas_key += 1
-                                    st.rerun()
-                            with cols[4]:
-                                region_key = row["Select"]
-                                st.session_state.temp_selections[region_key] = st.checkbox(
-                                    f"Select region {row['Region']} from page {row['Page']}",
-                                    value=st.session_state.temp_selections[region_key],
-                                    key=f"checkbox_{region_key}",
-                                    label_visibility="collapsed"
+                        # Handle redraw result
+                        if (canvas_result.json_data is not None and 
+                            canvas_result.json_data.get("objects")):
+                            regions = canvas_result.json_data["objects"]
+                            if regions:  # If a new region is drawn
+                                # Convert coordinates back to original scale
+                                new_region = regions[-1]  # Get the last drawn region
+                                original_coords = (
+                                    max(0, int(new_region['left'] / scale_factor)),
+                                    max(0, int(new_region['top'] / scale_factor)),
+                                    min(page_img.width, int((new_region['left'] + new_region['width']) / scale_factor)),
+                                    min(page_img.height, int((new_region['top'] + new_region['height']) / scale_factor))
                                 )
-                        
-                        # Add Process Files button at the bottom
-                        if st.button("Process Files", type="primary"):
-                            # Collect all selected regions
-                            selected_regions = []
-                            for key, is_selected in st.session_state.temp_selections.items():
-                                if is_selected:
-                                    page_num, region_num = map(int, key.split('_'))
-                                    region_key = get_region_key(st.session_state.current_file, page_num, region_num)
-                                    if region_key in st.session_state.cropped_regions_cache:
-                                        selected_regions.append({
-                                            'page': page_num,
-                                            'region': region_num,
-                                            'image': st.session_state.cropped_regions_cache[region_key]
-                                        })
-                            
-                            # Store selected regions for processing
-                            st.session_state.selected_regions = selected_regions
-                            # Move to next step
-                            st.session_state.step = 3
-                            st.rerun()
-            
-            # Show completion options
-            if not remaining_files:
-                st.success("All files processed!")
-                if len(st.session_state.processed_files) > 1:
-                    st.write("### Download All")
-                    scanner = AssignmentScanner()
-                    results = scanner.process_multiple_pdfs(
-                        list(st.session_state.processed_files),
-                        st.session_state.regions_map
-                    )
-                    if results:
-                        zip_buffer = BytesIO()
-                        with zipfile.ZipFile(zip_buffer, "w") as zip_file:
-                            for img, filename in results:
-                                img_bytes = scanner.get_image_bytes(img)
-                                zip_file.writestr(filename, img_bytes)
-                        st.download_button(
-                            label="Download All as ZIP",
-                            data=zip_buffer.getvalue(),
-                            file_name="processed_files.zip",
-                            mime="application/zip",
-                            type="primary"
-                        )
-
-        elif st.session_state.step == 3:
-            with control_col:
-                st.header("Process Files")
-                
-                if hasattr(st.session_state, 'selected_regions') and st.session_state.selected_regions:
-                    st.write(f"Selected {len(st.session_state.selected_regions)} regions for processing")
-                    
-                    # OCR Optimization options
-                    st.write("### Image Processing Options")
-                    use_ocr_optimization = st.checkbox("Optimize images for OCR", value=True, help="Apply preprocessing to improve OCR accuracy")
-                    
-                    if use_ocr_optimization:
-                        st.write("OCR Optimization will:")
-                        st.write("- Convert to grayscale")
-                        st.write("- Apply adaptive thresholding")
-                        st.write("- Remove noise")
-                        st.write("- Enhance contrast")
-                    
-                    # Stitch mode selection
-                    st.write("### Output Format")
-                    stitch_mode = st.selectbox(
-                        "Select output format",
-                        ["Individual Images", "Horizontal Stack", "Vertical Stack", "Grid by Row", "Grid by Column"]
-                    )
-                    
-                    if stitch_mode.startswith("Grid"):
-                        cols_per_row = st.number_input("Images per row/column", min_value=1, value=3)
-                    
-                    # Process button
-                    if st.button("Generate Output", type="primary"):
-                        with st.spinner("Processing images..."):
-                            # Process images based on options
-                            processed_images = []
-                            for region in st.session_state.selected_regions:
-                                img = region['image']
-                                if use_ocr_optimization:
-                                    # Convert to OpenCV format for preprocessing while maintaining quality
-                                    cv_image = cv2.cvtColor(np.array(img), cv2.COLOR_RGB2BGR)
-                                    
-                                    # Convert to grayscale
-                                    gray = cv2.cvtColor(cv_image, cv2.COLOR_BGR2GRAY)
-                                    
-                                    # Apply adaptive thresholding with better parameters for quality
-                                    binary = cv2.adaptiveThreshold(
-                                        gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
-                                        cv2.THRESH_BINARY, 21, 11  # Adjusted parameters for better quality
-                                    )
-                                    
-                                    # Denoise with parameters optimized for document images
-                                    denoised = cv2.fastNlMeansDenoising(binary, None, h=10, templateWindowSize=7, searchWindowSize=21)
-                                    
-                                    # Convert back to PIL with high quality
-                                    processed_img = Image.fromarray(denoised)
-                                else:
-                                    processed_img = img.copy()  # Make a copy to preserve original
                                 
-                                processed_images.append({
-                                    'page': region['page'],
-                                    'region': region['region'],
-                                    'image': processed_img
-                                })
-                            
-                            # Store processed images in session state for preview
-                            st.session_state.processed_images = processed_images
-                            st.session_state.current_stitch_mode = stitch_mode
-                            st.session_state.current_cols_per_row = cols_per_row if stitch_mode.startswith("Grid") else None
-                            
-                            # Create output based on stitch mode
-                            if stitch_mode == "Individual Images":
-                                # Create ZIP file with individual images
-                                zip_buffer = BytesIO()
-                                with zipfile.ZipFile(zip_buffer, "w", compression=zipfile.ZIP_STORED) as zip_file:  # No compression for images
-                                    for img_data in processed_images:
-                                        img_byte_arr = BytesIO()
-                                        img_data['image'].save(img_byte_arr, format='PNG')  # Use PNG format
-                                        zip_file.writestr(
-                                            f"page{img_data['page']}_region{img_data['region']}.png",
-                                            img_byte_arr.getvalue()
-                                        )
+                                # Update the region
+                                state_manager.update_region(
+                                    st.session_state.current_file,
+                                    st.session_state.redraw_page,
+                                    st.session_state.redraw_region,
+                                    original_coords
+                                )
                                 
-                                # Store ZIP buffer in session state
-                                st.session_state.zip_buffer = zip_buffer.getvalue()
+                                # Process the updated region
+                                region_processor.process_dirty_regions(st.session_state.current_file)
+                                
+                                # Exit redraw mode
+                                state_manager.end_redraw()
                                 st.rerun()
-                            else:
-                                # Extract just the images for stitching
-                                images_to_stitch = [img_data['image'] for img_data in processed_images]
-                                
-                                # Create stitched image based on mode
-                                if stitch_mode == "Horizontal Stack":
-                                    final_image = stitch_regions_horizontally(None, None, images_to_stitch)
-                                elif stitch_mode == "Vertical Stack":
-                                    final_image = stitch_regions_vertically(None, None, images_to_stitch)
-                                elif stitch_mode == "Grid by Row":
-                                    final_image = stitch_regions_grid(None, None, images_to_stitch, 
-                                                                   max_cols=cols_per_row, by_column=False)
-                                else:  # Grid by Column
-                                    final_image = stitch_regions_grid(None, None, images_to_stitch, 
-                                                                   max_cols=cols_per_row, by_column=True)
-                                
-                                # Store final image in session state
-                                st.session_state.final_image = final_image
-                                st.rerun()
-                    
-                    # Option to go back
-                    if st.button("← Back to Region Selection"):
-                        st.session_state.step = 2
-                        st.rerun()
                 else:
-                    st.error("No regions selected. Please go back and select regions to process.")
-                    if st.button("← Back to Region Selection"):
-                        st.session_state.step = 2
-                        st.rerun()
-            
-            # Preview column now only shows results
-            with preview_col:
+                    # Normal drawing mode
+                    canvas_result, scale_factor = ui_manager.render_drawing_interface(st.session_state.current_image)
+    
+    # Right Column: Preview and Results
+    with preview_col:
+        if st.session_state.step == 1:
+            if st.session_state.current_file and st.session_state.current_image:
                 st.header("Preview")
-                if hasattr(st.session_state, 'processed_images'):
-                    if hasattr(st.session_state, 'zip_buffer'):
-                        st.download_button(
-                            label="Download All Regions (ZIP)",
-                            data=st.session_state.zip_buffer,
-                            file_name="processed_regions.zip",
-                            mime="application/zip"
-                        )
-                    elif hasattr(st.session_state, 'final_image'):
-                        st.image(st.session_state.final_image, caption="Generated Output", use_column_width=True)
-                        
-                        # Offer download of stitched image
-                        img_byte_arr = BytesIO()
-                        st.session_state.final_image.save(img_byte_arr, format='PNG')  # Use PNG format
-                        st.download_button(
-                            label="Download Stitched Image",
-                            data=img_byte_arr.getvalue(),
-                            file_name="stitched_regions.png",
-                            mime="image/png"
-                        )
+                st.image(st.session_state.current_image, caption="Preview", use_column_width=True)
+        
+        elif st.session_state.step == 2:
+                ui_manager.render_region_previews()
 
 
 if __name__ == "__main__":
