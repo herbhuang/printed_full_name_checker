@@ -10,5 +10,4 @@ wheels/
 .venv
 
 # Ignore data files
-input/
-output/
+temp_uploads/

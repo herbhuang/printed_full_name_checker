@@ -1,5 +1,5 @@
 [project]
-name = "p-class-task-scan"
+name = "printed_full_name_checker"
 version = "0.1.0"
 description = "A tool for scanning and processing student assignments"
 readme = "README.md"
