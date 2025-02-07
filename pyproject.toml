@@ -5,17 +5,18 @@ description = "A tool for scanning and processing student assignments"
 readme = "README.md"
 requires-python = ">=3.11,<3.12"  # Pin to Python 3.11 for better compatibility
 dependencies = [
-    "PyPDF2==3.0.1",  # Stable version with wheels
+    "PyPDF2==3.0.1", # Stable version with wheels
     "pytesseract==0.3.10",
-    "Pillow==9.5.0",  # Last version known to work well with Python 3.11
-    "numpy==1.24.3",  # Compatible with Python 3.11
-    "pandas==2.0.3",  # Compatible with numpy 1.24.3
-    "thefuzz[speedup]==0.19.0",  # Include speedup extras by default
+    "Pillow==9.5.0", # Last version known to work well with Python 3.11
+    "numpy==1.24.3", # Compatible with Python 3.11
+    "pandas==2.0.3", # Compatible with numpy 1.24.3
+    "thefuzz[speedup]==0.19.0", # Include speedup extras by default
     "pdf2image==1.16.3",
-    "opencv-python-headless==4.8.1.78",  # Headless version to avoid GUI dependencies
-    "scikit-image==0.21.0",  # Last version with good compatibility
+    "opencv-python-headless==4.8.1.78", # Headless version to avoid GUI dependencies
+    "scikit-image==0.21.0", # Last version with good compatibility
     "streamlit==1.31.0",
-    "streamlit-drawable-canvas==0.9.3"
+    "streamlit-drawable-canvas==0.9.3",
+    "opencv-python>=4.11.0.86",
 ]
 
 [dependency-groups]
