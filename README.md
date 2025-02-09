@@ -88,20 +88,12 @@ cd printed_full_name_checker
      - Download and install [Poppler for Windows](http://blog.alivate.com.au/poppler-windows/)
      - Add the poppler `bin` directory to your system PATH
 
-3. Install Python dependencies (choose one):
-   ```bash
-   # Recommended: Using uv
-   uv pip install -r requirements.txt
-   
-   # Alternative: Using pip
-   pip install -r requirements.txt
-   ```
 
 ## Usage
 
 1. Start the web interface:
 ```bash
-streamlit run src/assignment_scanner/webui.py
+uv run python streamlit run src/assignment_scanner/webui.py
 ```
 
 2. Follow the step-by-step process:
