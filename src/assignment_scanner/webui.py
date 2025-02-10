@@ -658,7 +658,7 @@ def main():
                         st.session_state.stitched_image = stitched
                         st.session_state.processed_regions = None
             
-            st.success("Images processed and ready for OCR!")
+            #st.success("Images processed and ready for OCR!")
             st.session_state.step = 4
             
         except Exception as e:
@@ -771,7 +771,8 @@ def main():
             1: "Upload File",
             2: "Draw Regions",
             3: "Process Regions",
-            4: "OCR Text"
+            4: "OCR Text",
+            5: "Export Results"
         }
         
         for step_num, step_name in step_names.items():
@@ -1036,10 +1037,38 @@ def main():
             # Get OCR configuration
             ocr_config = render_ocr_interface()
             
-            # Start OCR button
-            if st.button("Start OCR", type="primary", key="btn_start_ocr_step4"):
-                st.session_state.start_ocr = True
-                st.session_state.ocr_config = ocr_config
+            # Create two columns for the buttons
+            ocr_col1, ocr_col2 = st.columns(2)
+            
+            # Start OCR button in first column
+            with ocr_col1:
+                if st.button("Start OCR", type="primary", key="btn_start_ocr_step4"):
+                    st.session_state.start_ocr = True
+                    st.session_state.ocr_config = ocr_config
+            
+            # Save and Next button in second column
+            with ocr_col2:
+                if st.button("Save and Next →", type="primary", key="btn_save_next_step4"):
+                    # Save OCR results if they exist
+                    if hasattr(st.session_state, 'ocr_results') and st.session_state.ocr_results:
+                        # Save OCR results to regions
+                        for idx, result in enumerate(st.session_state.ocr_results):
+                            if result and result.text:
+                                # For individual mode, map results directly to regions
+                                if st.session_state.stitch_mode == "individual":
+                                    regions = state_manager.get_all_regions(st.session_state.current_file)
+                                    if idx < len(regions):
+                                        region = regions[idx]
+                                        state_manager.save_ocr_result(
+                                            st.session_state.current_file,
+                                            region.page_idx,
+                                            region.region_idx,
+                                            result.text,
+                                            result.confidence if hasattr(result, 'confidence') else None
+                                        )
+                    # Move to step 5
+                    st.session_state.step = 5
+                    st.rerun()
             
             # Process OCR if button was clicked
             if hasattr(st.session_state, 'start_ocr') and st.session_state.start_ocr:
@@ -1187,6 +1216,252 @@ def main():
                             label_visibility="hidden"
                         )
                     st.markdown("<br>", unsafe_allow_html=True)
+
+        elif st.session_state.step == 5:
+            handle_step5_export_results(state_manager)
+
+
+def handle_step4_ocr_text(state_manager: StateManager, ui_manager: UIManager):
+    """Handle OCR text extraction step."""
+    if not st.session_state.current_file:
+        st.warning("Please upload a PDF file first.")
+        st.session_state.step = 1
+        st.rerun()
+        return
+    
+    st.markdown("### OCR Text Extraction")
+    st.markdown("Review and edit the extracted text from each region.")
+    
+    regions = state_manager.get_all_regions(st.session_state.current_file)
+    if not regions:
+        st.warning("No regions defined. Please draw regions first.")
+        st.session_state.step = 2
+        st.rerun()
+        return
+    
+    # Group regions by page
+    regions_by_page = {}
+    for region in regions:
+        if region.page_idx not in regions_by_page:
+            regions_by_page[region.page_idx] = []
+        regions_by_page[region.page_idx].append(region)
+    
+    # Display regions with OCR results and edit capability
+    for page_num in sorted(regions_by_page.keys()):
+        st.markdown(f"#### Page {page_num}")
+        page_regions = regions_by_page[page_num]
+        
+        for region in sorted(page_regions, key=lambda r: r.region_idx):
+            region_img = state_manager.get_region_image(
+                st.session_state.current_file,
+                region.page_idx,
+                region.region_idx
+            )
+            
+            if region_img:
+                col1, col2 = st.columns([0.4, 0.6])
+                with col1:
+                    st.image(region_img, caption=f"Region {region.region_idx}")
+                
+                with col2:
+                    current_text, confidence = state_manager.get_ocr_result(
+                        st.session_state.current_file,
+                        region.page_idx,
+                        region.region_idx
+                    )
+                    
+                    # Allow editing of OCR text
+                    new_text = st.text_area(
+                        f"Extracted Text (Region {region.region_idx})",
+                        value=current_text or "",
+                        key=f"ocr_text_p{page_num}_r{region.region_idx}"
+                    )
+                    
+                    # Save edited text
+                    if new_text != current_text:
+                        state_manager.save_ocr_result(
+                            st.session_state.current_file,
+                            region.page_idx,
+                            region.region_idx,
+                            new_text
+                        )
+    
+    # Navigation buttons
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        if st.button("← Back to Preview"):
+            st.session_state.step = 3
+            st.rerun()
+    
+    with col3:
+        if st.button("Save and Export →", type="primary"):
+            st.session_state.step = 5
+            st.rerun()
+
+
+def handle_step5_export_results(state_manager: StateManager):
+    """Handle results export step."""
+    if not st.session_state.current_file:
+        st.warning("Please upload a PDF file first.")
+        st.session_state.step = 1
+        st.rerun()
+        return
+    
+    st.markdown("### Export Results")
+    
+    # Check if we have OCR results from step 4
+    has_step4_results = hasattr(st.session_state, 'ocr_results') and st.session_state.ocr_results
+    stitch_mode = getattr(st.session_state, 'stitch_mode', 'individual')
+    
+    if stitch_mode != 'individual' and has_step4_results:
+        # For stitched modes, show the combined OCR result
+        st.markdown("#### Combined OCR Result")
+        combined_text = st.session_state.ocr_results[0].text if st.session_state.ocr_results else ""
+        
+        # Allow editing of the combined text
+        edited_text = st.text_area(
+            "Combined Text Result",
+            value=combined_text,
+            height=300,
+            key="combined_ocr_text"
+        )
+        
+        # Create a single-row dataframe for the combined result
+        df = pd.DataFrame([{
+            'mode': stitch_mode.capitalize(),
+            'text': edited_text,
+            'confidence': st.session_state.ocr_results[0].confidence if st.session_state.ocr_results else None
+        }])
+        
+        # Add copy buttons in columns
+        copy_col1, copy_col2 = st.columns([0.7, 0.3])
+        with copy_col1:
+            st.text_area("Copy this text:", value=edited_text, height=100, key="copy_area_stitched")
+        with copy_col2:
+            if st.button("📋 Copy Text", key="btn_copy_stitched"):
+                st.code(edited_text)
+                st.toast("Text is ready to copy! Use Ctrl+C or ⌘+C to copy", icon="📋")
+        
+    else:
+        # For individual mode or when using saved region results
+        st.markdown("#### Individual Region Results")
+        results = state_manager.export_ocr_results(st.session_state.current_file)
+        
+        if not results['regions']:
+            st.warning("No OCR results available. Please process regions first.")
+            st.session_state.step = 4
+            st.rerun()
+            return
+        
+        # Create DataFrame for individual results
+        df = pd.DataFrame(results['regions'])
+        
+        # Extract only texts and join with newlines
+        all_texts = "\n".join(df['text'].dropna().astype(str))
+        
+        # Add single Copy All button
+        if st.button("📋 Copy All Texts", type="primary", key="btn_copy_individual"):
+            st.code(all_texts)
+            st.toast("All texts copied! Use Ctrl+C or ⌘+C to copy", icon="📋")
+    
+    # Display results table based on mode
+    if stitch_mode != 'individual' and has_step4_results:
+        st.dataframe(df[['mode', 'text', 'confidence']])
+    else:
+        st.markdown("#### Results Preview Table")
+        # Create an interactive table with copy functionality
+        st.dataframe(
+            df[['page', 'region', 'text', 'confidence']],
+            column_config={
+                "page": st.column_config.NumberColumn("Page", help="Page number"),
+                "region": st.column_config.NumberColumn("Region", help="Region number"),
+                "text": st.column_config.TextColumn(
+                    "Text",
+                    help="Click to copy text",
+                    width="large",
+                ),
+                "confidence": st.column_config.NumberColumn(
+                    "Confidence",
+                    help="OCR confidence score",
+                    format="%.2f",
+                    min_value=0,
+                    max_value=1
+                )
+            },
+            hide_index=True,
+            use_container_width=True
+        )
+    
+    # Export options
+    st.markdown("### Export Options")
+    export_format = st.selectbox(
+        "Select export format:",
+        ["CSV", "JSON", "Excel"],
+        key="export_format"
+    )
+    
+    # Add metadata to results
+    export_data = {
+        'file_name': Path(st.session_state.current_file).name,
+        'ocr_mode': stitch_mode,
+        'timestamp': pd.Timestamp.now().isoformat(),
+        'results': df.to_dict('records')
+    }
+    
+    if st.button("Export Results", type="primary"):
+        if export_format == "CSV":
+            csv = df.to_csv(index=False)
+            st.download_button(
+                "Download CSV",
+                csv,
+                file_name=f"{Path(st.session_state.current_file).stem}_results.csv",
+                mime="text/csv"
+            )
+        elif export_format == "JSON":
+            json_str = json.dumps(export_data, indent=2)
+            st.download_button(
+                "Download JSON",
+                json_str,
+                file_name=f"{Path(st.session_state.current_file).stem}_results.json",
+                mime="application/json"
+            )
+        else:  # Excel
+            output = BytesIO()
+            with pd.ExcelWriter(output, engine='openpyxl') as writer:
+                df.to_excel(writer, index=False, sheet_name='OCR Results')
+                
+                # Add metadata sheet
+                metadata_df = pd.DataFrame([{
+                    'Property': key,
+                    'Value': value
+                } for key, value in {
+                    'File Name': export_data['file_name'],
+                    'OCR Mode': export_data['ocr_mode'],
+                    'Timestamp': export_data['timestamp']
+                }.items()])
+                metadata_df.to_excel(writer, index=False, sheet_name='Metadata')
+                
+            st.download_button(
+                "Download Excel",
+                output.getvalue(),
+                file_name=f"{Path(st.session_state.current_file).stem}_results.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )
+    
+    # Navigation
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button("← Back to OCR"):
+            st.session_state.step = 4
+            st.rerun()
+    
+    with col2:
+        if st.button("Start New Scan", type="primary"):
+            # Reset state
+            state_manager.clear_regions(st.session_state.current_file)
+            st.session_state.current_file = None
+            st.session_state.step = 1
+            st.rerun()
 
 
 if __name__ == "__main__":

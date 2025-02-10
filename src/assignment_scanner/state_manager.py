@@ -13,6 +13,8 @@ class RegionInfo:
     region_idx: int
     coordinates: Tuple[int, int, int, int]
     is_dirty: bool = False
+    ocr_text: Optional[str] = None
+    ocr_confidence: Optional[float] = None
 
 class StateManager:
     """Class to manage application state and region information."""
@@ -34,6 +36,10 @@ class StateManager:
             st.session_state.region_images = {}  # region_key -> Image
         if 'dirty_regions' not in st.session_state:
             st.session_state.dirty_regions = set()  # Set of region_keys that need updating
+            
+        # OCR Results
+        if 'ocr_results' not in st.session_state:
+            st.session_state.ocr_results = {}  # file_path -> Dict[str, Dict]
             
         # PDF pages cache
         if 'pdf_pages' not in st.session_state:
@@ -173,3 +179,42 @@ class StateManager:
                 del st.session_state.region_images[region_key]
             if region_key in st.session_state.dirty_regions:
                 st.session_state.dirty_regions.remove(region_key)
+
+    def save_ocr_result(self, file_path: str, page_idx: int, region_idx: int, text: str, confidence: float = None):
+        """Save OCR result for a specific region."""
+        if file_path in st.session_state.regions:
+            regions = st.session_state.regions[file_path]
+            for region in regions:
+                if region.page_idx == page_idx and region.region_idx == region_idx:
+                    region.ocr_text = text
+                    region.ocr_confidence = confidence
+                    break
+
+    def get_ocr_result(self, file_path: str, page_idx: int, region_idx: int) -> Tuple[Optional[str], Optional[float]]:
+        """Get OCR result for a specific region."""
+        if file_path in st.session_state.regions:
+            regions = st.session_state.regions[file_path]
+            for region in regions:
+                if region.page_idx == page_idx and region.region_idx == region_idx:
+                    return region.ocr_text, region.ocr_confidence
+        return None, None
+
+    def export_ocr_results(self, file_path: str) -> Dict:
+        """Export all OCR results for a file in a structured format."""
+        results = {
+            'file_name': Path(file_path).name,
+            'regions': []
+        }
+        
+        if file_path in st.session_state.regions:
+            for region in sorted(st.session_state.regions[file_path], 
+                               key=lambda r: (r.page_idx, r.region_idx)):
+                results['regions'].append({
+                    'page': region.page_idx,
+                    'region': region.region_idx,
+                    'coordinates': region.coordinates,
+                    'text': region.ocr_text,
+                    'confidence': region.ocr_confidence
+                })
+        
+        return results
