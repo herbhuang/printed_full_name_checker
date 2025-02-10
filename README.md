@@ -48,7 +48,7 @@ A specialized tool for scanning documents and checking printed full names using 
 - CUDA Toolkit 11.8 or higher
 - PDF processing tools (poppler-utils)
 
-### Package Management
+### Usage
 
 1. Install uv:
 ```bash
@@ -64,30 +64,10 @@ source .venv/bin/activate  # Linux/Mac
 .venv\Scripts\activate  # Windows
 ```
 
-3. Install dependencies with uv:
+3. Run with uv:
 ```bash
-uv pip install -e .
+uv run steamlit run main.py
 ```
-
-
-## Installation
-
-1. Clone the repository:
-```bash
-git clone https://github.com/yourusername/printed_full_name_checker.git
-cd printed_full_name_checker
-```
-
-2. Install system dependencies:
-   - Ubuntu/Debian:
-     ```bash
-     sudo apt-get update
-     sudo apt-get install -y poppler-utils
-     ```
-   - Windows:
-     - Download and install [Poppler for Windows](http://blog.alivate.com.au/poppler-windows/)
-     - Add the poppler `bin` directory to your system PATH
-
 
 ## Usage
 
@@ -101,26 +81,8 @@ uv run python streamlit run src/assignment_scanner/webui.py
    2. Draw regions of interest
    3. Configure image processing
    4. Run OCR with selected model
-
-## Project Structure
-
-```
-src/
-├── assignment_scanner/
-│   ├── webui.py           # Main web interface
-│   ├── scanner.py         # Core scanning logic
-│   ├── state_manager.py   # State management
-│   ├── region_processor.py # Region processing
-│   ├── image_processor.py # Image preprocessing
-│   └── ui_manager.py      # UI components
-├── ocr/
-│   ├── processor.py       # OCR orchestration
-│   ├── base.py           # Base classes
-│   ├── huggingface_api.py # API model implementation
-│   ├── qwen.py           # Qwen model implementation
-│   └── florence.py       # Florence model implementation
-```
-
+   5. Export results
+   
 ## Contributing
 
 Working on this section.
