@@ -64,19 +64,12 @@ source .venv/bin/activate  # Linux/Mac
 .venv\Scripts\activate  # Windows
 ```
 
-3. Run with uv:
+3. Start the web interface:
 ```bash
-uv run steamlit run main.py
+uv run python -m streamlit run src/assignment_scanner/webui.py
 ```
 
-## Usage
-
-1. Start the web interface:
-```bash
-uv run python streamlit run src/assignment_scanner/webui.py
-```
-
-2. Follow the step-by-step process:
+4. Follow the step-by-step process:
    1. Upload PDF file
    2. Draw regions of interest
    3. Configure image processing
